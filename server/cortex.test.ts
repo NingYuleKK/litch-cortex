@@ -100,24 +100,40 @@ describe("chunkText", () => {
 // ─── Test router structure ──────────────────────────────────────────
 
 describe("appRouter structure", () => {
-  it("should have document router with expected procedures", () => {
-    // Verify the router has the expected shape
+  it("should have all expected procedures including project routes", () => {
     expect(appRouter).toBeDefined();
-    // Check that key procedures exist by checking the router's _def
     const procedures = Object.keys((appRouter as any)._def.procedures);
+
+    // Auth
     expect(procedures).toContain("auth.me");
     expect(procedures).toContain("auth.logout");
+
+    // Project management (V0.2)
+    expect(procedures).toContain("project.list");
+    expect(procedures).toContain("project.create");
+    expect(procedures).toContain("project.get");
+    expect(procedures).toContain("project.update");
+
+    // Document management
     expect(procedures).toContain("document.list");
     expect(procedures).toContain("document.upload");
     expect(procedures).toContain("document.get");
     expect(procedures).toContain("document.chunks");
+
+    // Chunk management
     expect(procedures).toContain("chunk.listAll");
     expect(procedures).toContain("chunk.get");
     expect(procedures).toContain("chunk.extractTopics");
+
+    // Extraction
     expect(procedures).toContain("extraction.extractDocument");
+
+    // Topic management
     expect(procedures).toContain("topic.list");
     expect(procedures).toContain("topic.get");
     expect(procedures).toContain("topic.chunks");
+
+    // Summary management
     expect(procedures).toContain("summary.get");
     expect(procedures).toContain("summary.save");
     expect(procedures).toContain("summary.generate");
@@ -145,6 +161,35 @@ describe("auth protection", () => {
   it("should reject protected procedures for unauthenticated users", async () => {
     const ctx = createUnauthContext();
     const caller = appRouter.createCaller(ctx);
+    // document.list requires auth
     await expect(caller.document.list()).rejects.toThrow();
+  });
+
+  it("should reject project.list for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.project.list()).rejects.toThrow();
+  });
+
+  it("should reject project.create for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.project.create({ name: "Test Project" })
+    ).rejects.toThrow();
+  });
+
+  it("should reject topic.list for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.topic.list()).rejects.toThrow();
+  });
+
+  it("should reject summary.generate for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.summary.generate({ topicId: 1 })
+    ).rejects.toThrow();
   });
 });

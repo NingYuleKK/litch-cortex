@@ -27,14 +27,16 @@ const statusMap: Record<string, { label: string; color: string; icon: React.Reac
   error: { label: "错误", color: "bg-red-500/20 text-red-400", icon: <XCircle className="h-3 w-3" /> },
 };
 
-export default function Home() {
+export default function Home({ projectId }: { projectId?: number }) {
   const [, setLocation] = useLocation();
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ file: string; status: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: documents, refetch: refetchDocs } = trpc.document.list.useQuery();
+  const { data: documents, refetch: refetchDocs } = trpc.document.list.useQuery(
+    projectId ? { projectId } : undefined
+  );
   const uploadMutation = trpc.document.upload.useMutation();
   const extractMutation = trpc.extraction.extractDocument.useMutation();
 
@@ -59,16 +61,15 @@ export default function Home() {
         const result = await uploadMutation.mutateAsync({
           filename: file.name,
           fileBase64: base64,
+          projectId,
         });
 
         progress[i].status = "extracting";
         setUploadProgress([...progress]);
 
-        // Auto-extract topics
         try {
           await extractMutation.mutateAsync({ documentId: result.id });
         } catch {
-          // Topic extraction failure is non-fatal
           toast.warning(`${file.name} 话题提取部分失败，可稍后重试`);
         }
 
@@ -84,7 +85,7 @@ export default function Home() {
 
     setUploading(false);
     refetchDocs();
-  }, [uploadMutation, extractMutation, refetchDocs]);
+  }, [uploadMutation, extractMutation, refetchDocs, projectId]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -104,6 +105,8 @@ export default function Home() {
     setIsDragging(false);
   }, []);
 
+  const chunksPath = projectId ? `/project/${projectId}/chunks` : "/chunks";
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -121,7 +124,7 @@ export default function Home() {
       <div
         className={`relative border-2 border-dashed rounded-lg p-8 md:p-12 text-center transition-all cursor-pointer ${
           isDragging
-            ? "border-primary bg-primary/5 cyber-glow"
+            ? "border-primary bg-primary/5"
             : "border-border hover:border-primary/50 hover:bg-card/50"
         }`}
         onDrop={handleDrop}
@@ -211,7 +214,7 @@ export default function Home() {
                           variant="ghost"
                           size="sm"
                           className="text-primary hover:text-primary/80 h-7 px-2"
-                          onClick={() => setLocation("/chunks")}
+                          onClick={() => setLocation(chunksPath)}
                         >
                           <Tags className="h-3 w-3 mr-1" />
                           查看

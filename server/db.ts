@@ -1,7 +1,8 @@
-import { eq, sql, desc, asc } from "drizzle-orm";
+import { eq, sql, desc, asc, and, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser, users,
+  projects, InsertProject, Project,
   documents, InsertDocument, Document,
   chunks, InsertChunk, Chunk,
   topics, InsertTopic, Topic,
@@ -79,6 +80,53 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+// ─── Project Helpers ────────────────────────────────────────────────
+
+export async function createProject(data: { userId: number; name: string; description?: string }): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(projects).values({
+    userId: data.userId,
+    name: data.name,
+    description: data.description ?? null,
+  });
+  return result[0].insertId;
+}
+
+export async function getProjectsByUser(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  // Get projects with document count
+  const rows = await db
+    .select({
+      id: projects.id,
+      userId: projects.userId,
+      name: projects.name,
+      description: projects.description,
+      createdAt: projects.createdAt,
+      docCount: sql<number>`COUNT(${documents.id})`.as("docCount"),
+    })
+    .from(projects)
+    .leftJoin(documents, eq(projects.id, documents.projectId))
+    .where(eq(projects.userId, userId))
+    .groupBy(projects.id)
+    .orderBy(desc(projects.createdAt));
+  return rows;
+}
+
+export async function getProjectById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+  return result[0];
+}
+
+export async function updateProject(id: number, data: { name?: string; description?: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(projects).set(data).where(eq(projects.id, id));
+}
+
 // ─── Document Helpers ───────────────────────────────────────────────
 
 export async function createDocument(data: InsertDocument): Promise<number> {
@@ -92,6 +140,12 @@ export async function updateDocument(id: number, data: Partial<InsertDocument>) 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.update(documents).set(data).where(eq(documents.id, id));
+}
+
+export async function getDocumentsByProject(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(documents).where(eq(documents.projectId, projectId)).orderBy(desc(documents.uploadTime));
 }
 
 export async function getDocumentsByUser(userId: number) {
@@ -141,6 +195,25 @@ export async function getAllChunksByUser(userId: number) {
     .orderBy(desc(chunks.createdAt));
 }
 
+export async function getAllChunksByProject(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      filename: documents.filename,
+    })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(documents.projectId, projectId))
+    .orderBy(desc(chunks.createdAt));
+}
+
 export async function getChunkById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
@@ -154,15 +227,12 @@ export async function findOrCreateTopic(label: string, description?: string): Pr
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Try to find existing topic
   const existing = await db.select().from(topics).where(eq(topics.label, label)).limit(1);
   if (existing.length > 0) {
-    // Increment weight
     await db.update(topics).set({ weight: sql`${topics.weight} + 1` }).where(eq(topics.id, existing[0].id));
     return existing[0].id;
   }
 
-  // Create new
   const result = await db.insert(topics).values({ label, description, weight: 1 });
   return result[0].insertId;
 }
@@ -183,6 +253,38 @@ export async function getAllTopicsWithCount() {
     .leftJoin(chunkTopics, eq(topics.id, chunkTopics.topicId))
     .groupBy(topics.id)
     .orderBy(desc(topics.weight));
+}
+
+/**
+ * Get topics scoped to a specific project.
+ * Joins through chunk_topics → chunks → documents to filter by projectId.
+ */
+export async function getTopicsByProject(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Find all chunk IDs belonging to this project
+  const projectChunkIds = db
+    .select({ id: chunks.id })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(documents.projectId, projectId));
+
+  // Get topics that have at least one chunk in this project
+  return db
+    .select({
+      id: topics.id,
+      label: topics.label,
+      description: topics.description,
+      weight: topics.weight,
+      createdAt: topics.createdAt,
+      chunkCount: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("chunkCount"),
+    })
+    .from(topics)
+    .innerJoin(chunkTopics, eq(topics.id, chunkTopics.topicId))
+    .where(inArray(chunkTopics.chunkId, projectChunkIds))
+    .groupBy(topics.id)
+    .orderBy(desc(sql`chunkCount`));
 }
 
 export async function getTopicById(id: number) {
@@ -210,6 +312,30 @@ export async function getChunksByTopic(topicId: number) {
     .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
     .innerJoin(documents, eq(chunks.documentId, documents.id))
     .where(eq(chunkTopics.topicId, topicId))
+    .orderBy(desc(chunkTopics.relevanceScore));
+}
+
+/**
+ * Get chunks for a topic, scoped to a specific project.
+ */
+export async function getChunksByTopicAndProject(topicId: number, projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      relevanceScore: chunkTopics.relevanceScore,
+      filename: documents.filename,
+    })
+    .from(chunkTopics)
+    .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(and(eq(chunkTopics.topicId, topicId), eq(documents.projectId, projectId)))
     .orderBy(desc(chunkTopics.relevanceScore));
 }
 

@@ -4,10 +4,11 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import {
-  createDocument, updateDocument, getDocumentsByUser, getDocumentById,
-  insertChunks, getChunksByDocument, getAllChunksByUser, getChunkById,
-  findOrCreateTopic, getAllTopicsWithCount, getTopicById, getChunksByTopic,
+  createDocument, updateDocument, getDocumentsByUser, getDocumentsByProject, getDocumentById,
+  insertChunks, getChunksByDocument, getAllChunksByUser, getAllChunksByProject, getChunkById,
+  findOrCreateTopic, getAllTopicsWithCount, getTopicsByProject, getTopicById, getChunksByTopic, getChunksByTopicAndProject,
   linkChunkToTopic, getSummaryByTopic, upsertSummary,
+  createProject, getProjectsByUser, getProjectById, updateProject,
 } from "./db";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
@@ -24,7 +25,6 @@ async function parsePdfBuffer(buffer: Buffer): Promise<string> {
 // ─── Text chunking helper ───────────────────────────────────────────
 function chunkText(text: string, minSize = 500, maxSize = 800): string[] {
   const results: string[] = [];
-  // Split by paragraphs first
   const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
 
   let current = "";
@@ -37,7 +37,6 @@ function chunkText(text: string, minSize = 500, maxSize = 800): string[] {
         results.push(current);
         current = trimmed;
       } else if (current.length + trimmed.length + 1 <= maxSize * 1.2) {
-        // Allow slight overflow to avoid tiny chunks
         current = current ? current + "\n\n" + trimmed : trimmed;
       } else {
         if (current) results.push(current);
@@ -47,13 +46,11 @@ function chunkText(text: string, minSize = 500, maxSize = 800): string[] {
   }
   if (current) results.push(current);
 
-  // Handle case where single paragraphs are very long
   const finalResults: string[] = [];
   for (const chunk of results) {
     if (chunk.length <= maxSize * 1.5) {
       finalResults.push(chunk);
     } else {
-      // Split long chunks by sentences
       const sentences = chunk.split(/(?<=[。！？.!?])\s*/);
       let sub = "";
       for (const sent of sentences) {
@@ -84,16 +81,61 @@ export const appRouter = router({
     }),
   }),
 
+  // ─── Project Management ──────────────────────────────────────────
+  project: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return getProjectsByUser(ctx.user.id);
+    }),
+
+    create: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1).max(256),
+        description: z.string().max(1024).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const id = await createProject({
+          userId: ctx.user.id,
+          name: input.name,
+          description: input.description,
+        });
+        return { id };
+      }),
+
+    get: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return getProjectById(input.id);
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1).max(256).optional(),
+        description: z.string().max(1024).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { id, ...data } = input;
+        await updateProject(id, data);
+        return { success: true };
+      }),
+  }),
+
   // ─── Document Management ──────────────────────────────────────────
   document: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
-      return getDocumentsByUser(ctx.user.id);
-    }),
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        if (input?.projectId) {
+          return getDocumentsByProject(input.projectId);
+        }
+        return getDocumentsByUser(ctx.user.id);
+      }),
 
     upload: protectedProcedure
       .input(z.object({
         filename: z.string(),
         fileBase64: z.string(),
+        projectId: z.number().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const buffer = Buffer.from(input.fileBase64, "base64");
@@ -105,6 +147,7 @@ export const appRouter = router({
         // 2. Create document record
         const docId = await createDocument({
           userId: ctx.user.id,
+          projectId: input.projectId ?? null,
           filename: input.filename,
           fileUrl,
           status: "parsing",
@@ -153,9 +196,14 @@ export const appRouter = router({
 
   // ─── Chunk Management ─────────────────────────────────────────────
   chunk: router({
-    listAll: protectedProcedure.query(async ({ ctx }) => {
-      return getAllChunksByUser(ctx.user.id);
-    }),
+    listAll: protectedProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        if (input?.projectId) {
+          return getAllChunksByProject(input.projectId);
+        }
+        return getAllChunksByUser(ctx.user.id);
+      }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
@@ -183,10 +231,7 @@ export const appRouter = router({
 返回格式：
 {"topics": [{"label": "话题名称", "relevance": 0.9}]}`,
             },
-            {
-              role: "user",
-              content: chunk.content,
-            },
+            { role: "user", content: chunk.content },
           ],
           response_format: {
             type: "json_schema",
@@ -234,7 +279,6 @@ export const appRouter = router({
 
   // ─── Batch Topic Extraction ───────────────────────────────────────
   extraction: router({
-    // Extract topics for all chunks of a document
     extractDocument: protectedProcedure
       .input(z.object({ documentId: z.number() }))
       .mutation(async ({ input }) => {
@@ -261,10 +305,7 @@ export const appRouter = router({
 返回格式：
 {"topics": [{"label": "话题名称", "relevance": 0.9}]}`,
                 },
-                {
-                  role: "user",
-                  content: chunk.content,
-                },
+                { role: "user", content: chunk.content },
               ],
               response_format: {
                 type: "json_schema",
@@ -316,23 +357,33 @@ export const appRouter = router({
 
   // ─── Topic Management ─────────────────────────────────────────────
   topic: router({
-    list: protectedProcedure.query(async () => {
-      return getAllTopicsWithCount();
-    }),
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(async ({ input }) => {
+        if (input?.projectId) {
+          return getTopicsByProject(input.projectId);
+        }
+        return getAllTopicsWithCount();
+      }),
 
     get: protectedProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), projectId: z.number().optional() }))
       .query(async ({ input }) => {
         const topic = await getTopicById(input.id);
         if (!topic) throw new Error("Topic not found");
-        const topicChunks = await getChunksByTopic(input.id);
+        const topicChunks = input.projectId
+          ? await getChunksByTopicAndProject(input.id, input.projectId)
+          : await getChunksByTopic(input.id);
         const summary = await getSummaryByTopic(input.id);
         return { topic, chunks: topicChunks, summary };
       }),
 
     chunks: protectedProcedure
-      .input(z.object({ topicId: z.number() }))
+      .input(z.object({ topicId: z.number(), projectId: z.number().optional() }))
       .query(async ({ input }) => {
+        if (input.projectId) {
+          return getChunksByTopicAndProject(input.topicId, input.projectId);
+        }
         return getChunksByTopic(input.topicId);
       }),
   }),
@@ -356,12 +407,14 @@ export const appRouter = router({
       }),
 
     generate: protectedProcedure
-      .input(z.object({ topicId: z.number() }))
+      .input(z.object({ topicId: z.number(), projectId: z.number().optional() }))
       .mutation(async ({ input }) => {
         const topic = await getTopicById(input.topicId);
         if (!topic) throw new Error("Topic not found");
 
-        const topicChunks = await getChunksByTopic(input.topicId);
+        const topicChunks = input.projectId
+          ? await getChunksByTopicAndProject(input.topicId, input.projectId)
+          : await getChunksByTopic(input.topicId);
         if (topicChunks.length === 0) throw new Error("No chunks found for this topic");
 
         const chunksText = topicChunks.map((c, i) => `[片段 ${i + 1}]\n${c.content}`).join("\n\n---\n\n");
@@ -378,10 +431,7 @@ export const appRouter = router({
 - 长度适中（300-600字）
 - 可以使用 Markdown 格式`,
             },
-            {
-              role: "user",
-              content: chunksText,
-            },
+            { role: "user", content: chunksText },
           ],
         });
 

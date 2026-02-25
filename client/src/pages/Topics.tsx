@@ -1,12 +1,14 @@
 import { trpc } from "@/lib/trpc";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tags, Hash, Loader2, ChevronRight } from "lucide-react";
 import { useLocation } from "wouter";
 
-export default function TopicsPage() {
+export default function TopicsPage({ projectId }: { projectId?: number }) {
   const [, setLocation] = useLocation();
-  const { data: topics, isLoading } = trpc.topic.list.useQuery();
+  const { data: topics, isLoading } = trpc.topic.list.useQuery(
+    projectId ? { projectId } : undefined
+  );
 
   if (isLoading) {
     return (
@@ -15,6 +17,14 @@ export default function TopicsPage() {
       </div>
     );
   }
+
+  const handleTopicClick = (topicId: number) => {
+    if (projectId) {
+      setLocation(`/project/${projectId}/topics/${topicId}`);
+    } else {
+      setLocation(`/topics/${topicId}`);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -34,8 +44,8 @@ export default function TopicsPage() {
           {topics.map((topic) => (
             <Card
               key={topic.id}
-              className="bg-card border-border hover:border-primary/40 hover:cyber-glow transition-all cursor-pointer group"
-              onClick={() => setLocation(`/topics/${topic.id}`)}
+              className="bg-card border-border hover:border-primary/40 transition-all cursor-pointer group"
+              onClick={() => handleTopicClick(topic.id)}
             >
               <CardContent className="p-4">
                 <div className="flex items-start justify-between gap-2">

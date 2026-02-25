@@ -4,24 +4,19 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import DashboardLayout from "./components/DashboardLayout";
-import Home from "./pages/Home";
-import ChunksPage from "./pages/Chunks";
-import TopicsPage from "./pages/Topics";
-import TopicDetailPage from "./pages/TopicDetail";
+import ProjectList from "./pages/ProjectList";
+import ProjectWorkspace from "./pages/ProjectWorkspace";
 
 function Router() {
   return (
-    <DashboardLayout>
-      <Switch>
-        <Route path={"/"} component={Home} />
-        <Route path={"/chunks"} component={ChunksPage} />
-        <Route path={"/topics"} component={TopicsPage} />
-        <Route path={"/topics/:id"} component={TopicDetailPage} />
-        <Route path={"/404"} component={NotFound} />
-        <Route component={NotFound} />
-      </Switch>
-    </DashboardLayout>
+    <Switch>
+      <Route path={"/"} component={ProjectList} />
+      <Route path={"/project/:projectId"} component={ProjectWorkspace} />
+      <Route path={"/project/:projectId/:tab"} component={ProjectWorkspace} />
+      <Route path={"/project/:projectId/topics/:topicId"} component={ProjectWorkspace} />
+      <Route path={"/404"} component={NotFound} />
+      <Route component={NotFound} />
+    </Switch>
   );
 }
 

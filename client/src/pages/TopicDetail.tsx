@@ -4,19 +4,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, FileText, Hash, Loader2, Sparkles, Save, Tags } from "lucide-react";
+import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useLocation, useParams } from "wouter";
+import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 
-export default function TopicDetailPage() {
-  const params = useParams<{ id: string }>();
+export default function TopicDetailPage({ projectId, topicId: propTopicId }: { projectId?: number; topicId?: number }) {
   const [, setLocation] = useLocation();
-  const topicId = parseInt(params.id || "0");
+
+  // topicId can come from prop (workspace mode) or we default to 0
+  const topicId = propTopicId || 0;
 
   const { data, isLoading, refetch } = trpc.topic.get.useQuery(
-    { id: topicId },
+    { id: topicId, projectId },
     { enabled: topicId > 0 }
   );
 
@@ -41,7 +42,6 @@ export default function TopicDetailPage() {
     onError: (err) => toast.error(`生成失败: ${err.message}`),
   });
 
-  // Sync summary text from server data
   useEffect(() => {
     if (data?.summary?.summaryText) {
       setSummaryText(data.summary.summaryText);
@@ -60,12 +60,17 @@ export default function TopicDetailPage() {
     return (
       <div className="text-center py-20 text-muted-foreground">
         <p>话题不存在</p>
-        <Button variant="ghost" className="mt-4" onClick={() => setLocation("/topics")}>
+        <Button variant="ghost" className="mt-4" onClick={() => {
+          if (projectId) setLocation(`/project/${projectId}/topics`);
+          else setLocation("/topics");
+        }}>
           返回话题列表
         </Button>
       </div>
     );
   }
+
+  const backPath = projectId ? `/project/${projectId}/topics` : "/topics";
 
   return (
     <div className="space-y-4">
@@ -75,7 +80,7 @@ export default function TopicDetailPage() {
           variant="ghost"
           size="icon"
           className="h-8 w-8 shrink-0"
-          onClick={() => setLocation("/topics")}
+          onClick={() => setLocation(backPath)}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
@@ -146,7 +151,7 @@ export default function TopicDetailPage() {
                   variant="outline"
                   size="sm"
                   className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/10"
-                  onClick={() => generateMutation.mutate({ topicId })}
+                  onClick={() => generateMutation.mutate({ topicId, projectId })}
                   disabled={generateMutation.isPending}
                 >
                   {generateMutation.isPending ? (

@@ -1,0 +1,60 @@
+{
+  "query": "SELECT id, filename, projectId FROM documents LIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2hKcgV7cyBoGbvr.45256e43275f --database B5ULm8LpL8tpfAkdFwhkyX --execute SELECT id, filename, projectId FROM documents LIMIT 10;",
+  "rows": [
+    {
+      "id": "1",
+      "filename": "金瓶梅主题-金瓶梅研究方法.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "2",
+      "filename": "金瓶梅主题-金瓶梅研究方法.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "3",
+      "filename": "金瓶梅主题-金瓶梅故事来源.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "4",
+      "filename": "金瓶梅主题-索多玛与金瓶梅.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "5",
+      "filename": "金瓶梅主题-《金瓶梅》的道德拓扑.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "6",
+      "filename": "金瓶梅主题-JinPingMei金瓶梅文学赏析.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "7",
+      "filename": "关于做好春节期间网络文化相关工作的提示.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "8",
+      "filename": "_【显卡黑屏】显卡驱动冲突与Windows更新 固定的对话.pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "9",
+      "filename": "_电脑显示器无信号故障排除 .pdf",
+      "projectId": "1"
+    },
+    {
+      "id": "10",
+      "filename": "_显卡驱动崩溃问题排查 .pdf",
+      "projectId": "1"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tfilename\tprojectId\n1\t金瓶梅主题-金瓶梅研究方法.pdf\t1\n2\t金瓶梅主题-金瓶梅研究方法.pdf\t1\n3\t金瓶梅主题-金瓶梅故事来源.pdf\t1\n4\t金瓶梅主题-索多玛与金瓶梅.pdf\t1\n5\t金瓶梅主题-《金瓶梅》的道德拓扑.pdf\t1\n6\t金瓶梅主题-JinPingMei金瓶梅文学赏析.pdf\t1\n7\t关于做好春节期间网络文化相关工作的提示.pdf\t1\n8\t_【显卡黑屏】显卡驱动冲突与Windows更新 固定的对话.pdf\t1\n9\t_电脑显示器无信号故障排除 .pdf\t1\n10\t_显卡驱动崩溃问题排查 .pdf\t1\n",
+  "stderr": "",
+  "execution_time_ms": 54
+}

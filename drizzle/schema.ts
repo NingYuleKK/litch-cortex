@@ -19,11 +19,26 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 /**
+ * Projects - top-level grouping for documents
+ */
+export const projects = mysqlTable("projects", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  name: varchar("name", { length: 256 }).notNull(),
+  description: text("description"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Project = typeof projects.$inferSelect;
+export type InsertProject = typeof projects.$inferInsert;
+
+/**
  * Uploaded PDF documents
  */
 export const documents = mysqlTable("documents", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
+  projectId: int("projectId"),
   filename: varchar("filename", { length: 512 }).notNull(),
   fileUrl: text("fileUrl"),
   rawText: mediumtext("rawText"),

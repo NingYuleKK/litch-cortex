@@ -4,8 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileText, Hash, Loader2 } from "lucide-react";
 
-export default function ChunksPage() {
-  const { data: chunks, isLoading } = trpc.chunk.listAll.useQuery();
+export default function ChunksPage({ projectId }: { projectId?: number }) {
+  const { data: chunks, isLoading } = trpc.chunk.listAll.useQuery(
+    projectId ? { projectId } : undefined
+  );
 
   if (isLoading) {
     return (
@@ -44,16 +46,12 @@ export default function ChunksPage() {
                     className="px-4 py-3 hover:bg-secondary/30 transition-colors"
                   >
                     <div className="flex items-start gap-3">
-                      {/* Line number */}
                       <div className="shrink-0 w-12 text-right">
                         <span className="text-xs font-mono text-muted-foreground">
                           #{String(idx + 1).padStart(3, "0")}
                         </span>
                       </div>
-
-                      {/* Content */}
                       <div className="flex-1 min-w-0">
-                        {/* Meta line */}
                         <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                           <Badge variant="outline" className="text-xs font-mono border-primary/30 text-primary h-5">
                             <FileText className="h-2.5 w-2.5 mr-1" />
@@ -67,8 +65,6 @@ export default function ChunksPage() {
                             {chunk.tokenCount} chars
                           </span>
                         </div>
-
-                        {/* Text content */}
                         <p className="text-sm text-foreground/90 leading-relaxed line-clamp-3 font-mono">
                           {chunk.content}
                         </p>
