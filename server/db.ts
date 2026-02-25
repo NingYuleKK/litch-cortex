@@ -1,11 +1,17 @@
-import { eq } from "drizzle-orm";
+import { eq, sql, desc, asc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import {
+  InsertUser, users,
+  documents, InsertDocument, Document,
+  chunks, InsertChunk, Chunk,
+  topics, InsertTopic, Topic,
+  chunkTopics, InsertChunkTopic,
+  summaries, InsertSummary, Summary,
+} from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -18,26 +24,22 @@ export async function getDb() {
   return _db;
 }
 
+// ─── User Helpers ───────────────────────────────────────────────────
+
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
-
   const db = await getDb();
   if (!db) {
     console.warn("[Database] Cannot upsert user: database not available");
     return;
   }
-
   try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
+    const values: InsertUser = { openId: user.openId };
     const updateSet: Record<string, unknown> = {};
-
     const textFields = ["name", "email", "loginMethod"] as const;
     type TextField = (typeof textFields)[number];
-
     const assignNullable = (field: TextField) => {
       const value = user[field];
       if (value === undefined) return;
@@ -45,9 +47,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       values[field] = normalized;
       updateSet[field] = normalized;
     };
-
     textFields.forEach(assignNullable);
-
     if (user.lastSignedIn !== undefined) {
       values.lastSignedIn = user.lastSignedIn;
       updateSet.lastSignedIn = user.lastSignedIn;
@@ -59,18 +59,13 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       values.role = 'admin';
       updateSet.role = 'admin';
     }
-
     if (!values.lastSignedIn) {
       values.lastSignedIn = new Date();
     }
-
     if (Object.keys(updateSet).length === 0) {
       updateSet.lastSignedIn = new Date();
     }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
+    await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
@@ -79,14 +74,171 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
+  if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+// ─── Document Helpers ───────────────────────────────────────────────
+
+export async function createDocument(data: InsertDocument): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(documents).values(data);
+  return result[0].insertId;
+}
+
+export async function updateDocument(id: number, data: Partial<InsertDocument>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(documents).set(data).where(eq(documents.id, id));
+}
+
+export async function getDocumentsByUser(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(documents).where(eq(documents.userId, userId)).orderBy(desc(documents.uploadTime));
+}
+
+export async function getDocumentById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(documents).where(eq(documents.id, id)).limit(1);
+  return result[0];
+}
+
+// ─── Chunk Helpers ──────────────────────────────────────────────────
+
+export async function insertChunks(data: InsertChunk[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (data.length === 0) return;
+  await db.insert(chunks).values(data);
+}
+
+export async function getChunksByDocument(documentId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(chunks).where(eq(chunks.documentId, documentId)).orderBy(asc(chunks.position));
+}
+
+export async function getAllChunksByUser(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      filename: documents.filename,
+    })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(documents.userId, userId))
+    .orderBy(desc(chunks.createdAt));
+}
+
+export async function getChunkById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(chunks).where(eq(chunks.id, id)).limit(1);
+  return result[0];
+}
+
+// ─── Topic Helpers ──────────────────────────────────────────────────
+
+export async function findOrCreateTopic(label: string, description?: string): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Try to find existing topic
+  const existing = await db.select().from(topics).where(eq(topics.label, label)).limit(1);
+  if (existing.length > 0) {
+    // Increment weight
+    await db.update(topics).set({ weight: sql`${topics.weight} + 1` }).where(eq(topics.id, existing[0].id));
+    return existing[0].id;
+  }
+
+  // Create new
+  const result = await db.insert(topics).values({ label, description, weight: 1 });
+  return result[0].insertId;
+}
+
+export async function getAllTopicsWithCount() {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: topics.id,
+      label: topics.label,
+      description: topics.description,
+      weight: topics.weight,
+      createdAt: topics.createdAt,
+      chunkCount: sql<number>`COUNT(${chunkTopics.chunkId})`.as("chunkCount"),
+    })
+    .from(topics)
+    .leftJoin(chunkTopics, eq(topics.id, chunkTopics.topicId))
+    .groupBy(topics.id)
+    .orderBy(desc(topics.weight));
+}
+
+export async function getTopicById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(topics).where(eq(topics.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getChunksByTopic(topicId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      relevanceScore: chunkTopics.relevanceScore,
+      filename: documents.filename,
+    })
+    .from(chunkTopics)
+    .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(chunkTopics.topicId, topicId))
+    .orderBy(desc(chunkTopics.relevanceScore));
+}
+
+// ─── ChunkTopic Helpers ─────────────────────────────────────────────
+
+export async function linkChunkToTopic(chunkId: number, topicId: number, relevanceScore: number = 1.0) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(chunkTopics).values({ chunkId, topicId, relevanceScore });
+}
+
+// ─── Summary Helpers ────────────────────────────────────────────────
+
+export async function getSummaryByTopic(topicId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(summaries).where(eq(summaries.topicId, topicId)).orderBy(desc(summaries.generatedAt)).limit(1);
+  return result[0];
+}
+
+export async function upsertSummary(topicId: number, summaryText: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existing = await db.select().from(summaries).where(eq(summaries.topicId, topicId)).limit(1);
+  if (existing.length > 0) {
+    await db.update(summaries).set({ summaryText, generatedAt: new Date() }).where(eq(summaries.id, existing[0].id));
+    return existing[0].id;
+  }
+  const result = await db.insert(summaries).values({ topicId, summaryText });
+  return result[0].insertId;
+}

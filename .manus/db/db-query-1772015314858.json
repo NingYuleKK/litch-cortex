@@ -1,0 +1,17 @@
+{
+  "query": "SELECT (SELECT COUNT(*) FROM topics) as topic_count, (SELECT COUNT(*) FROM chunks) as chunk_count, (SELECT COUNT(*) FROM chunk_topics) as chunk_topic_count, (SELECT COUNT(*) FROM summaries) as summary_count, (SELECT COUNT(*) FROM documents) as doc_count;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2hKcgV7cyBoGbvr.45256e43275f --database B5ULm8LpL8tpfAkdFwhkyX --execute SELECT (SELECT COUNT(*) FROM topics) as topic_count, (SELECT COUNT(*) FROM chunks) as chunk_count, (SELECT COUNT(*) FROM chunk_topics) as chunk_topic_count, (SELECT COUNT(*) FROM summaries) as summary_count, (SELECT COUNT(*) FROM documents) as doc_count;",
+  "rows": [
+    {
+      "topic_count": "592",
+      "chunk_count": "506",
+      "chunk_topic_count": "812",
+      "summary_count": "1",
+      "doc_count": "6"
+    }
+  ],
+  "messages": [],
+  "stdout": "topic_count\tchunk_count\tchunk_topic_count\tsummary_count\tdoc_count\n592\t506\t812\t1\t6\n",
+  "stderr": "",
+  "execution_time_ms": 58
+}

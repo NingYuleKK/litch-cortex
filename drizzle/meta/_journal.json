@@ -1,5 +1,27 @@
 {
   "version": "7",
   "dialect": "mysql",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1772013454357,
+      "tag": "0000_slippery_imperial_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1772013608379,
+      "tag": "0001_wet_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1772014228021,
+      "tag": "0002_regular_logan",
+      "breakpoints": true
+    }
+  ]
 }

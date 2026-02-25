@@ -1,0 +1,38 @@
+{
+  "query": "SELECT 'topics' as tbl, COUNT(*) as cnt FROM topics; SELECT 'chunks' as tbl, COUNT(*) as cnt FROM chunks; SELECT 'chunk_topics' as tbl, COUNT(*) as cnt FROM chunk_topics; SELECT 'summaries' as tbl, COUNT(*) as cnt FROM summaries;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2hKcgV7cyBoGbvr.45256e43275f --database B5ULm8LpL8tpfAkdFwhkyX --execute SELECT 'topics' as tbl, COUNT(*) as cnt FROM topics; SELECT 'chunks' as tbl, COUNT(*) as cnt FROM chunks; SELECT 'chunk_topics' as tbl, COUNT(*) as cnt FROM chunk_topics; SELECT 'summaries' as tbl, COUNT(*) as cnt FROM summaries;",
+  "rows": [
+    {
+      "tbl": "topics",
+      "cnt": "592"
+    },
+    {
+      "tbl": "tbl",
+      "cnt": "cnt"
+    },
+    {
+      "tbl": "chunks",
+      "cnt": "506"
+    },
+    {
+      "tbl": "tbl",
+      "cnt": "cnt"
+    },
+    {
+      "tbl": "chunk_topics",
+      "cnt": "812"
+    },
+    {
+      "tbl": "tbl",
+      "cnt": "cnt"
+    },
+    {
+      "tbl": "summaries",
+      "cnt": "1"
+    }
+  ],
+  "messages": [],
+  "stdout": "tbl\tcnt\ntopics\t592\ntbl\tcnt\nchunks\t506\ntbl\tcnt\nchunk_topics\t812\ntbl\tcnt\nsummaries\t1\n",
+  "stderr": "",
+  "execution_time_ms": 62
+}
