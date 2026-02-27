@@ -72,3 +72,13 @@
 - [x] 更新 Vitest 测试（19 个测试全部通过）
 - [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
 - [x] 保存 checkpoint
+
+## V0.3.1 话题导出功能
+- [x] 创建通用导出工具函数（生成 Markdown 内容、触发下载）
+- [x] TopicDetail 页面增加"导出 Markdown"和"导出 PDF"按钮
+- [x] Explore 页面增加"导出 Markdown"和"导出 PDF"按钮
+- [x] 导出内容包含：话题标题 + 总结 + 原文引用片段（带来源文档名）
+- [x] PDF 导出使用浏览器原生打印方案（支持中文）
+- [x] 文件名格式：topic-{话题名}-{日期}.md / .pdf
+- [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+- [x] 保存 checkpoint

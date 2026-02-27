@@ -4,16 +4,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags } from "lucide-react";
+import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags, Download, FileDown } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
+import { exportAsMarkdown, exportAsPdf } from "@/lib/exportTopic";
 
 export default function TopicDetailPage({ projectId, topicId: propTopicId }: { projectId?: number; topicId?: number }) {
   const [, setLocation] = useLocation();
 
-  // topicId can come from prop (workspace mode) or we default to 0
   const topicId = propTopicId || 0;
 
   const { data, isLoading, refetch } = trpc.topic.get.useQuery(
@@ -47,6 +47,31 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
       setSummaryText(data.summary.summaryText);
     }
   }, [data?.summary?.summaryText]);
+
+  function handleExportMarkdown() {
+    if (!data) return;
+    exportAsMarkdown({
+      title: data.topic.label,
+      summary: summaryText || data.summary?.summaryText || "",
+      chunks: data.chunks.map((c) => ({
+        content: c.content,
+        filename: c.filename,
+      })),
+    });
+    toast.success("Markdown 已下载");
+  }
+
+  function handleExportPdf() {
+    if (!data) return;
+    exportAsPdf({
+      title: data.topic.label,
+      summary: summaryText || data.summary?.summaryText || "",
+      chunks: data.chunks.map((c) => ({
+        content: c.content,
+        filename: c.filename,
+      })),
+    });
+  }
 
   if (isLoading) {
     return (
@@ -84,7 +109,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <Tags className="h-5 w-5 text-primary shrink-0" />
             <h1 className="text-xl font-semibold text-foreground truncate" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
@@ -94,6 +119,27 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
           <p className="text-sm text-muted-foreground">
             {data.chunks.length} 个关联片段 · 权重 {data.topic.weight}
           </p>
+        </div>
+        {/* Export Buttons */}
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs border-primary/30 text-primary hover:bg-primary/10"
+            onClick={handleExportMarkdown}
+          >
+            <Download className="h-3 w-3 mr-1" />
+            导出 MD
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs border-primary/30 text-primary hover:bg-primary/10"
+            onClick={handleExportPdf}
+          >
+            <FileDown className="h-3 w-3 mr-1" />
+            导出 PDF
+          </Button>
         </div>
       </div>
 

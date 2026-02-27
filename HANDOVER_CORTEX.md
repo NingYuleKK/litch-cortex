@@ -112,6 +112,7 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 ### 7. Topic 详情页 (`/project/:id/topics/:topicId`)
 - 左侧：关联 chunks 原文列表
 - 右侧：LLM 生成摘要 + 手动编辑总结
+- **V0.3.1**：导出 MD / 导出 PDF 按钮（含话题标题 + 总结 + 原文引用片段）
 
 ### 8. 话题探索 (`/project/:id/explore`)（V0.3 新增）
 - 用户输入关键词或问题
@@ -119,6 +120,7 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 - 将相关 chunks 发给 LLM 整理出结构化话题总结
 - 展示：话题标题 + 总结内容 + 关联原文片段
 - 用户可选择「保存为 Topic」存入 topics 表
+- **V0.3.1**：导出 MD / 导出 PDF 按钮（与 Topic 详情页相同格式）
 
 ### 9. 用户管理 (`/project/:id/users`)（V0.3 新增，admin only）
 - 显示所有用户列表（用户名、角色、创建时间、最后登录）
@@ -144,8 +146,9 @@ client/src/pages/ProjectWorkspace.tsx  → 项目工作区容器
 client/src/pages/Home.tsx              → PDF 上传页（项目内）
 client/src/pages/Chunks.tsx            → 分段预览页（项目内）
 client/src/pages/Topics.tsx            → 话题列表页（项目内）
-client/src/pages/TopicDetail.tsx       → Topic 详情页（项目内）
-client/src/pages/Explore.tsx           → 话题探索页（V0.3）
+client/src/pages/TopicDetail.tsx       → Topic 详情页（项目内，含导出按钮）
+client/src/pages/Explore.tsx           → 话题探索页（V0.3，含导出按钮）
+client/src/lib/exportTopic.ts          → 话题导出工具函数（V0.3.1）
 client/src/pages/UserManagement.tsx    → 用户管理页（V0.3，admin only）
 client/src/index.css                   → 赛博认知深色主题
 server/cortex.test.ts                  → Vitest 单元测试（19 个测试）
@@ -196,13 +199,14 @@ server/cortex.test.ts                  → Vitest 单元测试（19 个测试）
 | V0.2 | 2026-02-25 | 新增项目区：projects 表、项目列表首页、项目工作区、数据隔离 |
 | V0.2.1 | 2026-02-27 | 修复大文件 PDF 上传失败：改用 multipart/form-data + multer |
 | V0.3 | 2026-02-27 | 修复中文文件名乱码、新增话题探索功能、独立用户名密码认证系统 |
+| V0.3.1 | 2026-02-27 | 新增话题导出功能：导出 Markdown / PDF（含标题、总结、原文引用） |
 
 ---
 
 ## V0.4 可能的方向
 
 1. **话题聚类与合并**：当前话题粒度较细，可以用 LLM 或 embedding 进行二次聚类
-2. **导出功能**：支持导出话题总结为 Markdown/PDF
+2. ~~**导出功能**：支持导出话题总结为 Markdown/PDF~~ → 已在 V0.3.1 实现
 3. **全文搜索增强**：使用 embedding 向量搜索替代关键词匹配
 4. **批量操作**：批量重新提取话题、批量生成摘要
 5. **可视化**：话题关系图谱、文档覆盖热力图

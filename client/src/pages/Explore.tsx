@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
-import { Search, Sparkles, Save, Loader2, FileText, ChevronDown, ChevronUp } from "lucide-react";
+import { Search, Sparkles, Save, Loader2, FileText, ChevronDown, ChevronUp, Download, FileDown } from "lucide-react";
+import { exportAsMarkdown, exportAsPdf } from "@/lib/exportTopic";
 
 interface ExploreResult {
   title: string;
@@ -54,6 +55,31 @@ export default function Explore({ projectId }: { projectId: number }) {
       title: result.title,
       summary: result.summary,
       chunkIds: result.chunks.map((c) => c.id),
+    });
+  }
+
+  function handleExportMarkdown() {
+    if (!result) return;
+    exportAsMarkdown({
+      title: result.title,
+      summary: result.summary,
+      chunks: result.chunks.map((c) => ({
+        content: c.content,
+        filename: c.filename,
+      })),
+    });
+    toast.success("Markdown 已下载");
+  }
+
+  function handleExportPdf() {
+    if (!result) return;
+    exportAsPdf({
+      title: result.title,
+      summary: result.summary,
+      chunks: result.chunks.map((c) => ({
+        content: c.content,
+        filename: c.filename,
+      })),
     });
   }
 
@@ -119,19 +145,39 @@ export default function Explore({ projectId }: { projectId: number }) {
                   匹配到 {result.chunkCount} 个相关片段，展示 {result.chunks.length} 个
                 </p>
               </div>
-              <Button
-                onClick={handleSave}
-                disabled={saveMutation.isPending || result.chunks.length === 0}
-                size="sm"
-                className="bg-emerald-600 hover:bg-emerald-500 text-white"
-              >
-                {saveMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                ) : (
-                  <Save className="w-4 h-4 mr-1" />
-                )}
-                保存为 Topic
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  onClick={handleExportMarkdown}
+                  size="sm"
+                  variant="outline"
+                  className="border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10"
+                >
+                  <Download className="w-3.5 h-3.5 mr-1" />
+                  导出 MD
+                </Button>
+                <Button
+                  onClick={handleExportPdf}
+                  size="sm"
+                  variant="outline"
+                  className="border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10"
+                >
+                  <FileDown className="w-3.5 h-3.5 mr-1" />
+                  导出 PDF
+                </Button>
+                <Button
+                  onClick={handleSave}
+                  disabled={saveMutation.isPending || result.chunks.length === 0}
+                  size="sm"
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white"
+                >
+                  {saveMutation.isPending ? (
+                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4 mr-1" />
+                  )}
+                  保存为 Topic
+                </Button>
+              </div>
             </div>
             <div className="prose prose-sm prose-invert max-w-none text-foreground/90">
               <Streamdown>{result.summary}</Streamdown>
