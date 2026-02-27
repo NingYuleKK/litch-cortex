@@ -1,10 +1,10 @@
-# HANDOVER_CORTEX.md — Litch's Cortex V0.5.1 交接文档
+# HANDOVER_CORTEX.md — Litch's Cortex V0.5.2 交接文档
 
 ## 项目概述
 
 Litch's Cortex 是一个对话资产治理工具，用于管理 Litch 与多个 AI 进行深度对话产生的 PDF 记录。核心数据流为：**创建项目 → 上传 PDF → 解析分段 → LLM 提取话题标签 → 查看话题下的原文 → 按话题合并分段 → 生成总结**。
 
-V0.5 的核心变更是 **LLM Service 重构**：将硬编码的 LLM 调用抽象为可配置的多 Provider 服务层，支持 OpenAI、OpenRouter（Claude Opus 4.6 等）、自定义 Provider。V0.5.1 新增 LLM 调用自动重试机制、OpenRouter 模型列表自动获取（下拉搜索）、Skill 文件导入（.skill/.md）。
+V0.5 的核心变更是 **LLM Service 重构**：将硬编码的 LLM 调用抽象为可配置的多 Provider 服务层，支持 OpenAI、OpenRouter（Claude Opus 4.6 等）、自定义 Provider。V0.5.1 新增 LLM 调用自动重试机制、OpenRouter 模型列表自动获取（下拉搜索）、Skill 文件导入（.skill/.md）。V0.5.2 新增 **话题摘要对话式交互**：将单轮摘要生成改为多轮对话，支持多步骤 Skill 工作流（如 Phase 1 生成大纲 → 用户确认 → Phase 2 写初稿 → Phase 3 自检精炼）。
 
 ---
 
@@ -36,13 +36,13 @@ chunk_topics: id, chunkId, topicId, relevanceScore
 summaries: id, topicId, summaryText, generatedAt
 llmConfig: id, provider, baseUrl, apiKeyEncrypted, defaultModel, taskModels(JSON), isActive, createdAt, updatedAt  ← V0.5 新增
 promptTemplates: id, name, description, systemPrompt, isPreset, createdAt, updatedAt  ← V0.5 新增
+topicConversations: id, topicId, projectId, title, messages(JSON), promptTemplateId, createdAt, updatedAt  ← V0.5.2 新增
 users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 ```
 
-**V0.5 新增表说明：**
+**V0.5.2 新增表说明：**
 
-- `llmConfig`：存储 LLM Provider 配置，API key 使用 base64 编码存储（`apiKeyEncrypted`），支持全局默认配置 + 各任务类型独立模型配置（`taskModels` JSON 字段）
-- `promptTemplates`：存储 Prompt 模板，`isPreset` 标记预设模板（不可删除），支持多用户共享
+- `topicConversations`：存储话题对话上下文，`messages` 字段为 JSON 格式的消息数组（`[{role, content}, ...]`），支持 system/user/assistant 角色。`promptTemplateId` 记录启动对话时选择的 Prompt 模板。每个话题可有多个对话记录。
 
 ---
 
@@ -112,6 +112,60 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 
 ---
 
+## 话题对话式交互（V0.5.2 核心变更）
+
+### 设计背景
+
+用户导入的多步骤 Claude Skill（如"对话转 Blog"）需要多轮交互：Phase 1 生成大纲 → 用户确认 → Phase 2 写初稿 → Phase 3 自检精炼。原有的单轮摘要生成无法支持此工作流。
+
+### 架构设计
+
+```
+话题详情页右侧面板
+├── 对话 Tab（V0.5.2 新增）
+│   ├── 历史对话列表（可切换/删除）
+│   ├── 迷你聊天窗口（消息列表 + 输入框）
+│   ├── Prompt 模板选择器
+│   └── "开始对话" 按钮
+└── 总结 Tab（保留原有功能）
+    ├── 手动编辑摘要
+    └── 保存总结
+```
+
+### 后端 API
+
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `summary.startChat` | mutation | 启动新对话：自动构建 system prompt（含 chunks 内容 + 模板），发送首条消息给 LLM |
+| `summary.continueChat` | mutation | 继续对话：追加用户消息到上下文，调用 LLM 获取回复 |
+| `summary.listConversations` | query | 获取话题的所有对话记录列表 |
+| `summary.getConversation` | query | 获取单个对话的完整消息历史 |
+| `summary.deleteConversation` | mutation | 删除对话记录 |
+
+### 对话上下文管理
+
+- **持久化存储**：对话消息存储在 `topicConversations` 表的 `messages` JSON 字段
+- **消息格式**：`[{role: "system"|"user"|"assistant", content: string}, ...]`
+- **首条消息构建**：
+  1. 获取话题关联的所有 chunks 内容
+  2. 构建 system prompt：用户选择的 Prompt 模板内容
+  3. 构建 user 消息：包含所有 chunks 原文
+  4. 调用 LLM 获取首条回复
+  5. 保存完整消息历史到数据库
+- **后续消息**：追加 user 消息 → 调用 LLM → 追加 assistant 回复 → 更新数据库
+
+### 前端组件
+
+- **对话 Tab**：默认显示，包含历史对话列表和聊天窗口
+- **历史对话列表**：显示该话题的所有对话，可点击切换、可删除
+- **聊天窗口**：
+  - 消息列表：区分 user/assistant 消息，assistant 消息支持 Markdown 渲染
+  - 输入框：底部固定，支持 Enter 发送
+  - 加载状态：LLM 响应时显示"思考中..."动画
+- **总结 Tab**：保留原有的手动编辑摘要功能
+
+---
+
 ## 认证系统（V0.3 新增，V0.4 增强）
 
 ### 架构
@@ -165,10 +219,12 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 ### 6. 话题列表 (`/project/:id/topics`)
 - 三列网格布局展示话题
 
-### 7. Topic 详情页 (`/project/:id/topics/:topicId`)
+### 7. Topic 详情页 (`/project/:id/topics/:topicId`)（V0.5.2 重大改造）
 - 左侧：关联 chunks 原文列表，支持「原始片段 / 合并片段」Tab 切换
 - 左侧新增「合并相关分段」/「重新合并」按钮
-- 右侧：LLM 生成摘要 + 手动编辑总结
+- 右侧改为双 Tab 布局：
+  - **对话 Tab（V0.5.2）**：迷你聊天窗口，支持多轮对话，Prompt 模板选择器 + 历史对话列表
+  - **总结 Tab**：手动编辑摘要 + 保存（保留原有功能）
 - **V0.5**：Prompt 模板选择器从数据库加载模板
 
 ### 8. 话题探索 (`/project/:id/explore`)
@@ -204,10 +260,10 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 ## 关键文件
 
 ```
-drizzle/schema.ts                      → 数据库表定义（含 llmConfig、promptTemplates 表）
+drizzle/schema.ts                      → 数据库表定义（含 llmConfig、promptTemplates、topicConversations 表）
 server/llm-service.ts                  → V0.5 LLM Service 抽象层（callLLM、Provider 配置）
-server/db.ts                           → 数据库查询层（含 LLM Config 和 Prompt Template CRUD）
-server/routers.ts                      → tRPC 路由（含 llmSettings、promptTemplate routers）
+server/db.ts                           → 数据库查询层（含 LLM Config、Prompt Template、TopicConversation CRUD）
+server/routers.ts                      → tRPC 路由（含 llmSettings、promptTemplate、summary.chat routers）
 server/uploadRoute.ts                  → PDF 上传 Express 路由
 server/authRoute.ts                    → 独立认证路由
 server/_core/context.ts                → tRPC 上下文（双认证模式）
@@ -224,13 +280,14 @@ client/src/pages/ProjectWorkspace.tsx  → 项目工作区容器
 client/src/pages/Home.tsx              → PDF 上传页
 client/src/pages/Chunks.tsx            → 分段预览页
 client/src/pages/Topics.tsx            → 话题列表页
-client/src/pages/TopicDetail.tsx       → Topic 详情页
+client/src/pages/TopicDetail.tsx       → Topic 详情页（V0.5.2 对话式交互）
 client/src/pages/Explore.tsx           → 话题探索页
 client/src/pages/UserManagement.tsx    → 用户管理页
 client/src/lib/exportTopic.ts          → 话题导出工具函数
 client/src/index.css                   → 赛博认知深色主题
 server/cortex.test.ts                  → Vitest 单元测试（18 个测试）
 server/v04.test.ts                     → V0.4+V0.5+V0.5.1 测试（46 个测试）
+server/v052.test.ts                    → V0.5.2 对话功能测试（27 个测试）
 server/auth.logout.test.ts             → 认证测试（1 个测试）
 ```
 
@@ -253,6 +310,12 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | `topic.get` | query | 获取话题详情 |
 | `summary.generate` | mutation | LLM 生成话题摘要（支持 customPrompt） |
 | `summary.save` | mutation | 保存手动编辑的总结 |
+| `summary.get` | query | 获取话题摘要 |
+| `summary.startChat` | mutation | **V0.5.2** 启动话题对话（含 chunks + prompt 模板） |
+| `summary.continueChat` | mutation | **V0.5.2** 继续对话（追加消息 + LLM 回复） |
+| `summary.listConversations` | query | **V0.5.2** 获取话题的所有对话列表 |
+| `summary.getConversation` | query | **V0.5.2** 获取单个对话完整历史 |
+| `summary.deleteConversation` | mutation | **V0.5.2** 删除对话记录 |
 | `explore.search` | mutation | 话题探索（支持 customPrompt） |
 | `explore.saveAsTopic` | mutation | 将探索结果保存为 Topic |
 | `mergedChunk.byTopic` | query | 获取话题的合并分段 |
@@ -298,7 +361,8 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | V0.4 | 2026-02-27 | 自定义 Prompt 模板、Chunk 合并优化、用户管理全局化、改密码、Admin 增强 |
 | V0.4.2 | 2026-02-27 | Chunk 合并改为按话题维度、修复 Prompt 模板选择器点击 bug |
 | V0.5 | 2026-02-27 | LLM Service 多 Provider 抽象层、配置管理、设置页 UI、多 Prompt 模板管理（DB 迁移） |
-| **V0.5.1** | **2026-02-27** | **LLM 调用自动重试、OpenRouter 模型列表下拉搜索、Skill 文件导入（.skill/.md）、模板编辑增强** |
+| V0.5.1 | 2026-02-27 | LLM 调用自动重试、OpenRouter 模型列表下拉搜索、Skill 文件导入（.skill/.md）、模板编辑增强 |
+| **V0.5.2** | **2026-02-27** | **话题摘要对话式交互：topicConversations 表、多轮对话 tRPC API、迷你聊天窗口、历史对话管理、Markdown 渲染** |
 
 ---
 
@@ -311,6 +375,7 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 5. **多格式支持**：支持 TXT、DOCX 等格式的文档上传
 6. **协作功能**：多用户共享项目、评论和标注
 7. **项目级 LLM 配置**：每个项目可覆盖全局 LLM 设置
+8. **对话导出**：将对话结果导出为 Markdown/PDF
 
 ---
 
@@ -354,3 +419,7 @@ pnpm start
 14. **V0.5.1** `callLLM` 内置自动重试（失败后等 1s，最多重试 2 次），解决 OpenRouter 冷启动超时问题
 15. **V0.5.1** 设置页模型选择改为下拉搜索框（OpenRouter 自动拉取模型列表，带缓存）
 16. **V0.5.1** 模板管理支持 .skill/.md 文件导入，模板编辑器增强（可拖拽、字符计数、内容预览）
+17. **V0.5.2** 话题详情页右侧改为双 Tab（对话 + 总结），对话 Tab 支持多轮 LLM 交互
+18. **V0.5.2** 对话上下文持久化在 `topicConversations` 表，支持历史对话列表切换和删除
+19. **V0.5.2** 对话启动时自动构建 system prompt（Prompt 模板）+ user 消息（chunks 内容）
+20. **V0.5.2** 测试文件 `server/v052.test.ts` 包含 27 个测试覆盖对话功能

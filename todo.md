@@ -197,3 +197,24 @@
 ### 交付
 - [x] 更新 Vitest 测试
 - [x] 推送 GitHub 并保存 checkpoint
+
+## V0.5.2 话题摘要对话式交互
+
+### 后端
+- [x] 新增 topic_conversations 表（存储对话上下文）
+- [x] 新增 tRPC procedure: summary.chat（对话式 LLM 交互）
+- [x] 新增 tRPC procedure: summary.getConversation（获取历史对话）
+- [x] 首条消息自动包含话题 chunks + prompt 模板
+
+### 前端
+- [x] TopicDetail 摘要区域改为迷你聊天窗口
+- [x] 支持 Markdown 渲染 LLM 输出
+- [x] 底部用户输入框支持多轮对话
+- [x] 保留"开始对话"按钮作为启动对话入口
+- [x] 保留 prompt 模板选择器
+- [x] 赛博深色主题一致
+
+### 交付
+- [x] 更新 Vitest 测试
+- [ ] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+- [ ] 保存 checkpoint

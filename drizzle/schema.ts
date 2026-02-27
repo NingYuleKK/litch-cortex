@@ -177,3 +177,22 @@ export const promptTemplates = mysqlTable("prompt_templates", {
 
 export type PromptTemplate = typeof promptTemplates.$inferSelect;
 export type InsertPromptTemplate = typeof promptTemplates.$inferInsert;
+
+/**
+ * Topic conversations - stores multi-turn chat context for topic summaries.
+ * Each conversation is tied to a topic and optionally a project.
+ * Messages are stored as JSON array of {role, content} objects.
+ */
+export const topicConversations = mysqlTable("topic_conversations", {
+  id: int("id").autoincrement().primaryKey(),
+  topicId: int("topicId").notNull(),
+  projectId: int("projectId"),
+  title: varchar("title", { length: 256 }),  // auto-generated or user-set title
+  messages: mediumtext("messages").notNull(), // JSON array of {role, content}
+  promptTemplateId: int("promptTemplateId"), // which template was used to start
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type TopicConversation = typeof topicConversations.$inferSelect;
+export type InsertTopicConversation = typeof topicConversations.$inferInsert;

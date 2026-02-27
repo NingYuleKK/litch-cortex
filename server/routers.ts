@@ -14,6 +14,7 @@ import {
   deleteMergedChunksByTopic, hasMergedChunksForTopic,
   getActiveLlmConfig, upsertLlmConfig,
   getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
+  createTopicConversation, getTopicConversation, getConversationsByTopic, updateTopicConversation, deleteTopicConversation,
 } from "./db";
 import { storagePut } from "./storage";
 import { callLLM } from "./llm-service";
@@ -442,6 +443,171 @@ export const appRouter = router({
 
         const id = await upsertSummary(input.topicId, summaryText);
         return { id, summaryText };
+      }),
+
+    // ── Conversation-based chat for topic summaries ──
+
+    /** Start a new conversation: build system prompt from chunks + template, call LLM, persist */
+    startChat: protectedProcedure
+      .input(z.object({
+        topicId: z.number(),
+        projectId: z.number().optional(),
+        customPrompt: z.string().optional(),
+        promptTemplateId: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const topic = await getTopicById(input.topicId);
+        if (!topic) throw new Error("Topic not found");
+
+        const topicChunks = input.projectId
+          ? await getChunksByTopicAndProject(input.topicId, input.projectId)
+          : await getChunksByTopic(input.topicId);
+        if (topicChunks.length === 0) throw new Error("No chunks found for this topic");
+
+        const chunksText = topicChunks.map((c, i) => `[片段 ${i + 1}]\n${c.content}`).join("\n\n---\n\n");
+
+        const systemPrompt = input.customPrompt
+          ? `${input.customPrompt}\n\n以下是关于「${topic.label}」的文本片段：`
+          : `你是一个专业的内容总结助手。请根据以下关于「${topic.label}」话题的多个文本片段，生成一份结构化的总结。\n\n要求：\n- 总结应该涵盖所有片段的核心观点\n- 使用清晰的中文表达\n- 长度适中（300-600字）\n- 可以使用 Markdown 格式`;
+
+        // Build initial messages
+        const messages = [
+          { role: "system" as const, content: systemPrompt },
+          { role: "user" as const, content: chunksText },
+        ];
+
+        // Call LLM
+        const response = await callLLM({
+          taskType: "summarize",
+          messages,
+        });
+
+        const assistantContent = response.choices[0]?.message?.content;
+        if (!assistantContent || typeof assistantContent !== "string") {
+          throw new Error("LLM returned empty response");
+        }
+
+        // Append assistant reply to messages
+        const fullMessages = [
+          ...messages,
+          { role: "assistant" as const, content: assistantContent },
+        ];
+
+        // Persist conversation
+        const convId = await createTopicConversation({
+          topicId: input.topicId,
+          projectId: input.projectId ?? null,
+          title: `对话: ${topic.label}`,
+          messages: JSON.stringify(fullMessages),
+          promptTemplateId: input.promptTemplateId ?? null,
+        });
+
+        // Also save as summary for backward compatibility
+        await upsertSummary(input.topicId, assistantContent);
+
+        return {
+          conversationId: convId,
+          assistantMessage: assistantContent,
+          messages: fullMessages.filter(m => m.role !== "system"),
+        };
+      }),
+
+    /** Continue an existing conversation: append user message, call LLM, update DB */
+    continueChat: protectedProcedure
+      .input(z.object({
+        conversationId: z.number(),
+        userMessage: z.string().min(1),
+      }))
+      .mutation(async ({ input }) => {
+        const conv = await getTopicConversation(input.conversationId);
+        if (!conv) throw new Error("Conversation not found");
+
+        let messages: Array<{ role: string; content: string }>;
+        try {
+          messages = JSON.parse(conv.messages);
+        } catch {
+          throw new Error("Invalid conversation data");
+        }
+
+        // Append user message
+        messages.push({ role: "user", content: input.userMessage });
+
+        // Call LLM with full context
+        const response = await callLLM({
+          taskType: "summarize",
+          messages: messages as any,
+        });
+
+        const assistantContent = response.choices[0]?.message?.content;
+        if (!assistantContent || typeof assistantContent !== "string") {
+          throw new Error("LLM returned empty response");
+        }
+
+        // Append assistant reply
+        messages.push({ role: "assistant", content: assistantContent });
+
+        // Update conversation in DB
+        await updateTopicConversation(input.conversationId, {
+          messages: JSON.stringify(messages),
+        });
+
+        // Also update summary with latest assistant message
+        await upsertSummary(conv.topicId, assistantContent);
+
+        return {
+          assistantMessage: assistantContent,
+          messages: messages.filter(m => m.role !== "system"),
+        };
+      }),
+
+    /** List conversations for a topic */
+    listConversations: protectedProcedure
+      .input(z.object({
+        topicId: z.number(),
+        projectId: z.number().optional(),
+      }))
+      .query(async ({ input }) => {
+        const convs = await getConversationsByTopic(input.topicId, input.projectId);
+        return convs.map(c => ({
+          id: c.id,
+          title: c.title,
+          topicId: c.topicId,
+          projectId: c.projectId,
+          promptTemplateId: c.promptTemplateId,
+          messageCount: (() => {
+            try { return JSON.parse(c.messages).filter((m: any) => m.role !== "system").length; } catch { return 0; }
+          })(),
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+        }));
+      }),
+
+    /** Get a single conversation with full messages */
+    getConversation: protectedProcedure
+      .input(z.object({ conversationId: z.number() }))
+      .query(async ({ input }) => {
+        const conv = await getTopicConversation(input.conversationId);
+        if (!conv) return null;
+        let messages: Array<{ role: string; content: string }> = [];
+        try { messages = JSON.parse(conv.messages); } catch { messages = []; }
+        return {
+          id: conv.id,
+          topicId: conv.topicId,
+          projectId: conv.projectId,
+          title: conv.title,
+          promptTemplateId: conv.promptTemplateId,
+          messages: messages.filter(m => m.role !== "system"),
+          createdAt: conv.createdAt,
+          updatedAt: conv.updatedAt,
+        };
+      }),
+
+    /** Delete a conversation */
+    deleteConversation: protectedProcedure
+      .input(z.object({ conversationId: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteTopicConversation(input.conversationId);
+        return { success: true };
       }),
   }),
 

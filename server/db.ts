@@ -12,6 +12,7 @@ import {
   mergedChunks, InsertMergedChunk, MergedChunk,
   llmConfig, InsertLlmConfig, LlmConfig,
   promptTemplates, InsertPromptTemplate, PromptTemplate,
+  topicConversations, InsertTopicConversation, TopicConversation,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -569,6 +570,64 @@ export async function deletePromptTemplate(id: number): Promise<void> {
   await db.delete(promptTemplates).where(
     and(eq(promptTemplates.id, id), eq(promptTemplates.isPreset, 0))
   );
+}
+
+// ─── Topic Conversation Helpers ────────────────────────────────────
+
+export async function createTopicConversation(data: {
+  topicId: number;
+  projectId?: number | null;
+  title?: string | null;
+  messages: string; // JSON string
+  promptTemplateId?: number | null;
+}): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(topicConversations).values({
+    topicId: data.topicId,
+    projectId: data.projectId ?? null,
+    title: data.title ?? null,
+    messages: data.messages,
+    promptTemplateId: data.promptTemplateId ?? null,
+  });
+  return result[0].insertId;
+}
+
+export async function getTopicConversation(id: number): Promise<TopicConversation | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const results = await db.select().from(topicConversations).where(eq(topicConversations.id, id)).limit(1);
+  return results[0] || null;
+}
+
+export async function getConversationsByTopic(topicId: number, projectId?: number): Promise<TopicConversation[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const conditions = [eq(topicConversations.topicId, topicId)];
+  if (projectId !== undefined) {
+    conditions.push(eq(topicConversations.projectId, projectId));
+  }
+  return db.select().from(topicConversations)
+    .where(and(...conditions))
+    .orderBy(desc(topicConversations.updatedAt));
+}
+
+export async function updateTopicConversation(id: number, data: {
+  messages?: string;
+  title?: string | null;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const updateData: Record<string, any> = {};
+  if (data.messages !== undefined) updateData.messages = data.messages;
+  if (data.title !== undefined) updateData.title = data.title;
+  await db.update(topicConversations).set(updateData).where(eq(topicConversations.id, id));
+}
+
+export async function deleteTopicConversation(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(topicConversations).where(eq(topicConversations.id, id));
 }
 
 export async function seedPresetTemplates(): Promise<void> {
