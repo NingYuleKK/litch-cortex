@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, EyeOff, Save, Zap, ChevronDown, ChevronRight, Loader2, FileText, ArrowRight } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, Save, Zap, ChevronDown, ChevronRight, Loader2, FileText, ArrowRight, Search, X } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
 const TASK_TYPES = [
@@ -23,6 +23,155 @@ const PROVIDER_OPTIONS = [
   { value: "custom", label: "自定义", desc: "自定义 OpenAI 兼容 API" },
 ];
 
+// ─── Model Search Combobox ───────────────────────────────────────────
+
+interface ModelOption {
+  id: string;
+  name: string;
+  context_length?: number;
+  pricing?: any;
+}
+
+function ModelCombobox({
+  value,
+  onChange,
+  models,
+  isLoading,
+  disabled,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  models: ModelOption[];
+  isLoading: boolean;
+  disabled?: boolean;
+  placeholder?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const filtered = useMemo(() => {
+    if (!search) return models.slice(0, 100); // Show first 100 by default
+    const q = search.toLowerCase();
+    return models.filter(
+      (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
+    ).slice(0, 100);
+  }, [models, search]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  if (models.length === 0 && !isLoading) {
+    // Fallback to plain input when no models available
+    return (
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || "输入模型名称..."}
+        className={`bg-background/50 font-mono text-sm ${className || ""}`}
+        disabled={disabled}
+      />
+    );
+  }
+
+  return (
+    <div className="relative">
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+        <Input
+          ref={inputRef}
+          value={open ? search : value}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            if (!open) setOpen(true);
+          }}
+          onFocus={() => {
+            setOpen(true);
+            setSearch("");
+          }}
+          placeholder={placeholder || "搜索模型..."}
+          className={`bg-background/50 font-mono text-xs pl-8 pr-8 ${className || ""}`}
+          disabled={disabled || isLoading}
+        />
+        {value && !open && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+            onClick={() => {
+              onChange("");
+              setSearch("");
+              inputRef.current?.focus();
+            }}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        )}
+        {isLoading && (
+          <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-muted-foreground" />
+        )}
+      </div>
+      {open && filtered.length > 0 && (
+        <div
+          ref={dropdownRef}
+          className="absolute z-50 mt-1 w-full max-h-60 overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-lg"
+        >
+          {filtered.map((m) => (
+            <button
+              key={m.id}
+              className={`w-full text-left px-3 py-2 text-xs hover:bg-accent/50 transition-colors flex items-center justify-between ${
+                m.id === value ? "bg-accent/30" : ""
+              }`}
+              onClick={() => {
+                onChange(m.id);
+                setOpen(false);
+                setSearch("");
+              }}
+            >
+              <div className="flex flex-col min-w-0">
+                <span className="font-mono truncate">{m.id}</span>
+                {m.name !== m.id && (
+                  <span className="text-[10px] text-muted-foreground truncate">{m.name}</span>
+                )}
+              </div>
+              {m.context_length && (
+                <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
+                  {(m.context_length / 1000).toFixed(0)}K
+                </span>
+              )}
+            </button>
+          ))}
+          {filtered.length === 100 && (
+            <div className="px-3 py-1.5 text-[10px] text-muted-foreground text-center">
+              显示前 100 个结果，请输入关键词过滤
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Settings Page ──────────────────────────────────────────────
+
 export default function Settings() {
   const [provider, setProvider] = useState("builtin");
   const [baseUrl, setBaseUrl] = useState("");
@@ -35,9 +184,15 @@ export default function Settings() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; reply?: string; error?: string } | null>(null);
 
+  // Model list state
+  const [modelList, setModelList] = useState<ModelOption[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+
   const configQuery = trpc.llmSettings.getConfig.useQuery();
   const saveMutation = trpc.llmSettings.saveConfig.useMutation();
   const testMutation = trpc.llmSettings.testConnection.useMutation();
+  const fetchModelsMutation = trpc.llmSettings.fetchModels.useMutation();
 
   // Load config from server
   useEffect(() => {
@@ -46,9 +201,8 @@ export default function Settings() {
       setBaseUrl(configQuery.data.baseUrl);
       setDefaultModel(configQuery.data.defaultModel);
       setTaskModels(configQuery.data.taskModels || {});
-      // Don't overwrite apiKey if user has typed something
       if (!apiKey && configQuery.data.hasApiKey) {
-        setApiKey(""); // Keep empty, show placeholder
+        setApiKey("");
       }
     }
   }, [configQuery.data]);
@@ -65,7 +219,34 @@ export default function Settings() {
       setBaseUrl("");
       setDefaultModel("gemini-2.5-flash");
     }
+    // Reset model list when provider changes
+    setModelList([]);
+    setModelsLoaded(false);
   }, [provider]);
+
+  // Fetch models when API key is available and provider supports it
+  const handleFetchModels = async () => {
+    if (!apiKey || provider === "builtin") return;
+    setIsLoadingModels(true);
+    try {
+      const result = await fetchModelsMutation.mutateAsync({
+        provider,
+        baseUrl: baseUrl || undefined,
+        apiKey,
+      });
+      if (result.success && result.models) {
+        setModelList(result.models);
+        setModelsLoaded(true);
+        toast.success(`已获取 ${result.models.length} 个可用模型`);
+      } else {
+        toast.error(`获取模型列表失败: ${result.error}`);
+      }
+    } catch (err: any) {
+      toast.error(`获取模型列表失败: ${err.message}`);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
 
   const handleSave = async () => {
     try {
@@ -208,20 +389,39 @@ export default function Settings() {
 
             {/* Default Model */}
             <div className="space-y-2">
-              <Label className="text-sm font-medium">默认模型</Label>
-              <Input
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">默认模型</Label>
+                {isExternalProvider && apiKey && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs gap-1"
+                    onClick={handleFetchModels}
+                    disabled={isLoadingModels}
+                  >
+                    {isLoadingModels ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Search className="h-3 w-3" />
+                    )}
+                    {modelsLoaded ? "刷新模型列表" : "获取模型列表"}
+                  </Button>
+                )}
+              </div>
+              <ModelCombobox
                 value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                placeholder={provider === "openrouter" ? "anthropic/claude-sonnet-4" : "gpt-4.1-mini"}
-                className="bg-background/50 font-mono text-sm"
+                onChange={setDefaultModel}
+                models={modelList}
+                isLoading={isLoadingModels}
                 disabled={provider === "builtin"}
+                placeholder={provider === "openrouter" ? "搜索模型（如 claude）..." : "输入模型名称..."}
               />
               {provider === "builtin" && (
                 <p className="text-xs text-muted-foreground">内置服务使用 gemini-2.5-flash</p>
               )}
-              {provider === "openrouter" && (
+              {provider === "openrouter" && !modelsLoaded && (
                 <p className="text-xs text-muted-foreground">
-                  OpenRouter 模型格式：provider/model-name，如 anthropic/claude-sonnet-4
+                  输入 API Key 后点击"获取模型列表"可搜索所有可用模型
                 </p>
               )}
             </div>
@@ -246,17 +446,19 @@ export default function Settings() {
                         <Label className="text-xs">{task.label}</Label>
                         <p className="text-[10px] text-muted-foreground">{task.desc}</p>
                       </div>
-                      <Input
+                      <ModelCombobox
                         value={taskModels[task.key] || ""}
-                        onChange={(e) =>
+                        onChange={(v) =>
                           setTaskModels((prev) => ({
                             ...prev,
-                            [task.key]: e.target.value,
+                            [task.key]: v,
                           }))
                         }
-                        placeholder={`使用默认模型 (${defaultModel || "..."})`}
-                        className="bg-background/50 font-mono text-xs h-8"
+                        models={modelList}
+                        isLoading={false}
                         disabled={provider === "builtin"}
+                        placeholder={`使用默认 (${defaultModel || "..."})`}
+                        className="h-8"
                       />
                     </div>
                   ))}
@@ -352,7 +554,7 @@ export default function Settings() {
               </div>
               <div>
                 <span className="text-muted-foreground">版本：</span>
-                <span className="ml-2 font-mono text-xs">V0.5</span>
+                <span className="ml-2 font-mono text-xs">V0.5.1</span>
               </div>
             </div>
           </CardContent>

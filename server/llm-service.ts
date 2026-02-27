@@ -228,28 +228,89 @@ export interface CortexLlmParams extends InvokeParams {
   taskType?: TaskType;
 }
 
+// ─── Retry Helper ─────────────────────────────────────────────────
+
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1000;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Unified LLM call — resolves config from DB, routes to correct provider.
  * This is the ONLY function that should be used for LLM calls in Cortex.
+ * Includes automatic retry: on failure, waits 1s and retries up to 2 times.
  */
 export async function callLLM(params: CortexLlmParams): Promise<InvokeResult> {
   const config = await resolveConfig();
   const model = getModelForTask(config, params.taskType);
 
-  // If using built-in provider, delegate to the original invokeLLM
-  if (config.provider === "builtin") {
-    return builtinInvokeLLM(params);
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // If using built-in provider, delegate to the original invokeLLM
+      if (config.provider === "builtin") {
+        return await builtinInvokeLLM(params);
+      }
+
+      // For external providers (OpenAI, OpenRouter, Custom)
+      if (!config.apiKey) {
+        throw new Error(
+          `API key not configured for provider "${config.provider}". ` +
+          `Please configure it in Settings > LLM Configuration.`
+        );
+      }
+
+      return await callExternalProvider(config, params, model);
+    } catch (err: any) {
+      lastError = err;
+      // Don't retry config errors (missing API key)
+      if (err.message?.includes("API key not configured")) {
+        throw err;
+      }
+      if (attempt < MAX_RETRIES) {
+        console.log(
+          `[LLM] Attempt ${attempt + 1} failed, retrying in ${RETRY_DELAY_MS}ms... Error: ${err.message?.substring(0, 100)}`
+        );
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
   }
 
-  // For external providers (OpenAI, OpenRouter, Custom)
-  if (!config.apiKey) {
-    throw new Error(
-      `API key not configured for provider "${config.provider}". ` +
-      `Please configure it in Settings > LLM Configuration.`
-    );
-  }
+  // All retries exhausted
+  const friendlyMsg = simplifyLlmError(lastError?.message || "Unknown error");
+  throw new Error(friendlyMsg);
+}
 
-  return callExternalProvider(config, params, model);
+/**
+ * Simplify raw LLM error messages into user-friendly text.
+ */
+function simplifyLlmError(raw: string): string {
+  if (raw.includes("timeout") || raw.includes("ETIMEDOUT") || raw.includes("ECONNRESET")) {
+    return "LLM 服务连接超时，请稍后重试。如果问题持续，请检查设置中的 Provider 配置。";
+  }
+  if (raw.includes("429") || raw.includes("rate limit") || raw.includes("Rate limit")) {
+    return "LLM 服务请求频率过高，请稍等几秒后重试。";
+  }
+  if (raw.includes("401") || raw.includes("Unauthorized") || raw.includes("invalid_api_key")) {
+    return "API Key 无效或已过期，请在设置中检查 LLM 配置。";
+  }
+  if (raw.includes("402") || raw.includes("insufficient") || raw.includes("Payment")) {
+    return "API 余额不足，请检查您的 Provider 账户余额。";
+  }
+  if (raw.includes("500") || raw.includes("502") || raw.includes("503")) {
+    return "LLM 服务暂时不可用，已自动重试但仍失败。请稍后再试。";
+  }
+  if (raw.includes("model") && (raw.includes("not found") || raw.includes("does not exist"))) {
+    return "指定的模型不存在，请在设置中检查模型名称是否正确。";
+  }
+  // Truncate overly long error messages
+  if (raw.length > 200) {
+    return `LLM 调用失败：${raw.substring(0, 150)}...（已自动重试 ${MAX_RETRIES} 次）`;
+  }
+  return `LLM 调用失败：${raw}`;
 }
 
 /**

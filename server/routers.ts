@@ -755,6 +755,44 @@ export const appRouter = router({
       return getProviderDefaults();
     }),
 
+    fetchModels: protectedProcedure
+      .input(z.object({
+        provider: z.string(),
+        baseUrl: z.string().optional(),
+        apiKey: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          const baseUrl = (input.baseUrl || "https://openrouter.ai/api/v1").replace(/\/$/, "");
+          const response = await fetch(`${baseUrl}/models`, {
+            method: "GET",
+            headers: {
+              authorization: `Bearer ${input.apiKey}`,
+              ...(input.provider === "openrouter" ? {
+                "HTTP-Referer": "https://cortex.litch.app",
+                "X-Title": "Litch's Cortex",
+              } : {}),
+            },
+          });
+          if (!response.ok) {
+            const errText = await response.text();
+            return { success: false, models: [] as Array<{ id: string; name: string; context_length?: number; pricing?: any }>, error: `${response.status}: ${errText.substring(0, 200)}` };
+          }
+          const data = await response.json();
+          // OpenRouter returns { data: [...] }, OpenAI returns { data: [...] }
+          const rawModels = data.data || data.models || [];
+          const models = rawModels.map((m: any) => ({
+            id: m.id || m.model,
+            name: m.name || m.id || m.model,
+            context_length: m.context_length || m.max_tokens,
+            pricing: m.pricing || null,
+          })).sort((a: any, b: any) => (a.name || a.id).localeCompare(b.name || b.id));
+          return { success: true, models, error: null };
+        } catch (err: any) {
+          return { success: false, models: [] as Array<{ id: string; name: string; context_length?: number; pricing?: any }>, error: err.message };
+        }
+      }),
+
     testConnection: protectedProcedure
       .input(z.object({
         provider: z.string(),
@@ -848,6 +886,65 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         await deletePromptTemplate(input.id);
         return { success: true };
+      }),
+
+    importFile: protectedProcedure
+      .input(z.object({
+        fileName: z.string(),
+        fileContent: z.string(), // base64 encoded file content
+        fileType: z.enum(["skill", "md"]),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        let promptContent = "";
+        let templateName = input.fileName.replace(/\.(skill|md)$/i, "");
+
+        if (input.fileType === "md") {
+          // Directly decode base64 to text
+          promptContent = Buffer.from(input.fileContent, "base64").toString("utf-8");
+          // Try to extract name from frontmatter
+          const fmMatch = promptContent.match(/^---\n[\s\S]*?name:\s*(.+?)\n[\s\S]*?---/);
+          if (fmMatch) {
+            templateName = fmMatch[1].trim().replace(/^["']|["']$/g, "");
+          }
+        } else if (input.fileType === "skill") {
+          // .skill is a zip file containing SKILL.md
+          const AdmZip = (await import("adm-zip")).default;
+          const zipBuffer = Buffer.from(input.fileContent, "base64");
+          const zip = new AdmZip(zipBuffer);
+          const entries = zip.getEntries();
+          // Find SKILL.md in the zip
+          const skillEntry = entries.find((e: any) =>
+            e.entryName.endsWith("SKILL.md") || e.entryName === "SKILL.md"
+          );
+          if (!skillEntry) {
+            throw new Error(".skill 文件中未找到 SKILL.md");
+          }
+          promptContent = skillEntry.getData().toString("utf-8");
+          // Try to extract name from frontmatter
+          const fmMatch = promptContent.match(/^---\n[\s\S]*?name:\s*(.+?)\n[\s\S]*?---/);
+          if (fmMatch) {
+            templateName = fmMatch[1].trim().replace(/^["']|["']$/g, "");
+          }
+        }
+
+        if (!promptContent.trim()) {
+          throw new Error("文件内容为空");
+        }
+
+        const id = await createPromptTemplate({
+          name: templateName,
+          description: `从文件 ${input.fileName} 导入`,
+          systemPrompt: promptContent.trim(),
+          isPreset: 0,
+          createdBy: (ctx.user as any)?.cortexUserId || null,
+        });
+
+        return {
+          id,
+          name: templateName,
+          contentLength: promptContent.length,
+          preview: promptContent.substring(0, 200) + (promptContent.length > 200 ? "..." : ""),
+        };
       }),
   }),
 });

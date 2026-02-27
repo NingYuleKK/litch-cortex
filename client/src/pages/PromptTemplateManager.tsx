@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +24,10 @@ import {
   Loader2,
   Lock,
   Sparkles,
+  Upload,
+  FileUp,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -32,6 +36,10 @@ export default function PromptTemplateManager() {
   const [showImport, setShowImport] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [isImportingFile, setIsImportingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form state
   const [name, setName] = useState("");
@@ -44,6 +52,7 @@ export default function PromptTemplateManager() {
   const createMutation = trpc.promptTemplate.create.useMutation();
   const updateMutation = trpc.promptTemplate.update.useMutation();
   const deleteMutation = trpc.promptTemplate.delete.useMutation();
+  const importFileMutation = trpc.promptTemplate.importFile.useMutation();
 
   const templates = templatesQuery.data || [];
   const presets = templates.filter((t: any) => t.isPreset === 1);
@@ -130,6 +139,59 @@ export default function PromptTemplateManager() {
     }
   };
 
+  // File import handler
+  const handleFileImport = useCallback(async (file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!ext || !["skill", "md"].includes(ext)) {
+      toast.error("仅支持 .skill 和 .md 文件");
+      return;
+    }
+
+    setIsImportingFile(true);
+    try {
+      // Read file as base64
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      // Convert to base64 in chunks to avoid stack overflow
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+
+      const result = await importFileMutation.mutateAsync({
+        fileName: file.name,
+        fileContent: base64,
+        fileType: ext as "skill" | "md",
+      });
+
+      toast.success(`已导入模板"${result.name}"（${result.contentLength} 字符）`);
+      templatesQuery.refetch();
+    } catch (err: any) {
+      toast.error(`文件导入失败: ${err.message}`);
+    } finally {
+      setIsImportingFile(false);
+    }
+  }, [importFileMutation, templatesQuery]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handleFileImport(files[0]);
+    }
+  }, [handleFileImport]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false);
+  }, []);
+
   const startEdit = (template: any) => {
     setName(template.name);
     setDescription(template.description || "");
@@ -140,6 +202,73 @@ export default function PromptTemplateManager() {
 
   const cancelEdit = () => {
     resetForm();
+  };
+
+  // Template card with preview
+  const TemplateCard = ({ t, isPreset }: { t: any; isPreset: boolean }) => {
+    const isExpanded = expandedId === t.id;
+    const charCount = t.systemPrompt?.length || 0;
+    const previewLines = t.systemPrompt?.split("\n").slice(0, 3).join("\n") || "";
+    const hasMore = t.systemPrompt?.split("\n").length > 3 || charCount > 300;
+
+    return (
+      <Card className="border-border/30 bg-card/60">
+        <CardContent className="p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <FileText className={`h-4 w-4 shrink-0 ${isPreset ? "text-cyan-400" : "text-emerald-400"}`} />
+                <h3 className="font-medium text-sm">{t.name}</h3>
+                <span className="text-[10px] text-muted-foreground bg-background/50 px-1.5 py-0.5 rounded">
+                  {charCount.toLocaleString()} 字符
+                </span>
+              </div>
+              {t.description && (
+                <p className="text-xs text-muted-foreground mb-2">{t.description}</p>
+              )}
+              <pre className="text-xs text-muted-foreground/70 bg-background/50 rounded p-2 overflow-auto whitespace-pre-wrap font-mono"
+                style={{ maxHeight: isExpanded ? "none" : "80px" }}
+              >
+                {isExpanded ? t.systemPrompt : previewLines}
+                {!isExpanded && hasMore ? "\n..." : ""}
+              </pre>
+              {hasMore && (
+                <button
+                  className="text-[10px] text-cyan-400 hover:text-cyan-300 mt-1 flex items-center gap-0.5"
+                  onClick={() => setExpandedId(isExpanded ? null : t.id)}
+                >
+                  {isExpanded ? (
+                    <>收起 <ChevronUp className="h-3 w-3" /></>
+                  ) : (
+                    <>展开全部 ({charCount.toLocaleString()} 字符) <ChevronDown className="h-3 w-3" /></>
+                  )}
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => startEdit(t)}
+              >
+                <Edit2 className="h-3.5 w-3.5" />
+              </Button>
+              {!isPreset && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-destructive hover:text-destructive"
+                  onClick={() => setDeletingId(t.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
   };
 
   return (
@@ -188,6 +317,48 @@ export default function PromptTemplateManager() {
       </div>
 
       <div className="container max-w-4xl py-6 space-y-6">
+        {/* File Drop Zone */}
+        <div
+          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+            isDragOver
+              ? "border-cyan-500/60 bg-cyan-500/5"
+              : "border-border/40 bg-card/30 hover:border-border/60"
+          }`}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".skill,.md"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileImport(file);
+              e.target.value = "";
+            }}
+          />
+          {isImportingFile ? (
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              正在解析文件...
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <FileUp className="h-8 w-8 text-muted-foreground/50" />
+              <div className="text-sm text-muted-foreground">
+                拖入 <span className="font-mono text-cyan-400">.skill</span> 或{" "}
+                <span className="font-mono text-cyan-400">.md</span> 文件导入模板
+              </div>
+              <div className="text-xs text-muted-foreground/60">
+                .skill 文件会自动解压提取 SKILL.md 内容
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Preset Templates */}
         <div>
           <h2 className="text-sm font-medium text-muted-foreground mb-3 flex items-center gap-2">
@@ -196,33 +367,7 @@ export default function PromptTemplateManager() {
           </h2>
           <div className="grid gap-3">
             {presets.map((t: any) => (
-              <Card key={t.id} className="border-border/30 bg-card/60">
-                <CardContent className="p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <FileText className="h-4 w-4 text-cyan-400 shrink-0" />
-                        <h3 className="font-medium text-sm">{t.name}</h3>
-                      </div>
-                      {t.description && (
-                        <p className="text-xs text-muted-foreground mb-2">{t.description}</p>
-                      )}
-                      <pre className="text-xs text-muted-foreground/70 bg-background/50 rounded p-2 max-h-20 overflow-auto whitespace-pre-wrap font-mono">
-                        {t.systemPrompt.substring(0, 200)}
-                        {t.systemPrompt.length > 200 ? "..." : ""}
-                      </pre>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0"
-                      onClick={() => startEdit(t)}
-                    >
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+              <TemplateCard key={t.id} t={t} isPreset={true} />
             ))}
           </div>
         </div>
@@ -244,43 +389,7 @@ export default function PromptTemplateManager() {
           ) : (
             <div className="grid gap-3">
               {customs.map((t: any) => (
-                <Card key={t.id} className="border-border/30 bg-card/60">
-                  <CardContent className="p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <FileText className="h-4 w-4 text-emerald-400 shrink-0" />
-                          <h3 className="font-medium text-sm">{t.name}</h3>
-                        </div>
-                        {t.description && (
-                          <p className="text-xs text-muted-foreground mb-2">{t.description}</p>
-                        )}
-                        <pre className="text-xs text-muted-foreground/70 bg-background/50 rounded p-2 max-h-20 overflow-auto whitespace-pre-wrap font-mono">
-                          {t.systemPrompt.substring(0, 200)}
-                          {t.systemPrompt.length > 200 ? "..." : ""}
-                        </pre>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => startEdit(t)}
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-destructive hover:text-destructive"
-                          onClick={() => setDeletingId(t.id)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                <TemplateCard key={t.id} t={t} isPreset={false} />
               ))}
             </div>
           )}
@@ -311,12 +420,18 @@ export default function PromptTemplateManager() {
                 />
               </div>
               <div className="space-y-2">
-                <Label className="text-sm">System Prompt</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm">System Prompt</Label>
+                  <span className="text-[10px] text-muted-foreground">
+                    {systemPrompt.length.toLocaleString()} 字符
+                  </span>
+                </div>
                 <Textarea
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
-                  className="bg-background/50 font-mono text-xs min-h-[200px]"
+                  className="bg-background/50 font-mono text-xs min-h-[200px] resize-y"
                   placeholder="输入 system prompt..."
+                  style={{ maxHeight: "600px" }}
                 />
               </div>
               <div className="flex gap-2">
@@ -358,12 +473,18 @@ export default function PromptTemplateManager() {
               />
             </div>
             <div className="space-y-2">
-              <Label>System Prompt</Label>
+              <div className="flex items-center justify-between">
+                <Label>System Prompt</Label>
+                <span className="text-[10px] text-muted-foreground">
+                  {systemPrompt.length.toLocaleString()} 字符
+                </span>
+              </div>
               <Textarea
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
                 placeholder="输入 system prompt 内容..."
-                className="font-mono text-xs min-h-[200px]"
+                className="font-mono text-xs min-h-[200px] resize-y"
+                style={{ maxHeight: "500px" }}
               />
             </div>
           </div>
@@ -401,12 +522,18 @@ export default function PromptTemplateManager() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Skill Prompt 内容</Label>
+              <div className="flex items-center justify-between">
+                <Label>Skill Prompt 内容</Label>
+                <span className="text-[10px] text-muted-foreground">
+                  {importText.length.toLocaleString()} 字符
+                </span>
+              </div>
               <Textarea
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
                 placeholder="粘贴 Skill 的完整 prompt 内容..."
-                className="font-mono text-xs min-h-[250px]"
+                className="font-mono text-xs min-h-[250px] resize-y"
+                style={{ maxHeight: "500px" }}
               />
             </div>
           </div>

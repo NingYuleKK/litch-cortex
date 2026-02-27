@@ -1,10 +1,10 @@
-# HANDOVER_CORTEX.md — Litch's Cortex V0.5 交接文档
+# HANDOVER_CORTEX.md — Litch's Cortex V0.5.1 交接文档
 
 ## 项目概述
 
 Litch's Cortex 是一个对话资产治理工具，用于管理 Litch 与多个 AI 进行深度对话产生的 PDF 记录。核心数据流为：**创建项目 → 上传 PDF → 解析分段 → LLM 提取话题标签 → 查看话题下的原文 → 按话题合并分段 → 生成总结**。
 
-V0.5 的核心变更是 **LLM Service 重构**：将硬编码的 LLM 调用抽象为可配置的多 Provider 服务层，支持 OpenAI、OpenRouter（Claude Opus 4.6 等）、自定义 Provider。同时将 Prompt 模板从前端 localStorage 迁移到数据库，支持多用户共享和 Skill 导入。
+V0.5 的核心变更是 **LLM Service 重构**：将硬编码的 LLM 调用抽象为可配置的多 Provider 服务层，支持 OpenAI、OpenRouter（Claude Opus 4.6 等）、自定义 Provider。V0.5.1 新增 LLM 调用自动重试机制、OpenRouter 模型列表自动获取（下拉搜索）、Skill 文件导入（.skill/.md）。
 
 ---
 
@@ -52,12 +52,11 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 
 ```
 server/llm-service.ts
-├── callLLM(options)          → 统一入口，所有 LLM 调用走这里
+callLLM(options)          → 统一入口，所有 LLM 调用走这里（含自动重试：失败后等 1s 重试，最多 2 次）
 ├── getProviderDefaults()     → 返回各 Provider 的默认配置
 ├── encodeApiKey(key)         → base64 编码 API key
 └── decodeApiKey(encoded)     → 解码 API key
 ```
-
 ### Provider 支持
 
 | Provider | Base URL | Model 格式 | 说明 |
@@ -189,6 +188,7 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 - **默认模型选择**：输入框
 - **连接测试**：发送测试请求验证配置是否正确
 - **各任务类型模型配置**：高级选项，可折叠，为不同任务指定不同模型
+- **V0.5.1 模型下拉搜索**：OpenRouter 自动获取可用模型列表，支持关键词过滤（如输入 "claude" 显示所有 Claude 模型）
 - **Prompt 模板管理入口**：链接到模板管理页
 
 ### 11. Prompt 模板管理 (`/settings/templates`)（V0.5 新增）
@@ -196,6 +196,8 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 - 创建新模板（名称 + 描述 + System Prompt）
 - 编辑/删除自定义模板（预设模板不可删除）
 - **导入 Skill**：粘贴 Claude Skill 的 prompt 内容，自动解析并导入为模板
+- **V0.5.1 文件导入**：拖拽或选择 .skill（zip）或 .md 文件直接导入为模板
+- **V0.5.1 模板编辑增强**：可拖拽调整高度的文本框、字符计数、内容预览（前几行 + 总字数）
 
 ---
 
@@ -228,7 +230,7 @@ client/src/pages/UserManagement.tsx    → 用户管理页
 client/src/lib/exportTopic.ts          → 话题导出工具函数
 client/src/index.css                   → 赛博认知深色主题
 server/cortex.test.ts                  → Vitest 单元测试（18 个测试）
-server/v04.test.ts                     → V0.4+V0.5 测试（36 个测试）
+server/v04.test.ts                     → V0.4+V0.5+V0.5.1 测试（46 个测试）
 server/auth.logout.test.ts             → 认证测试（1 个测试）
 ```
 
@@ -261,11 +263,13 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | `llmSettings.saveConfig` | mutation | **V0.5** 保存 LLM 配置 |
 | `llmSettings.getProviderDefaults` | query | **V0.5** 获取各 Provider 默认配置 |
 | `llmSettings.testConnection` | mutation | **V0.5** 测试 LLM 连接 |
+| `llmSettings.fetchModels` | mutation | **V0.5.1** 获取 Provider 可用模型列表 |
 | `promptTemplate.list` | query | **V0.5** 获取所有 Prompt 模板 |
 | `promptTemplate.getById` | query | **V0.5** 获取单个模板详情 |
 | `promptTemplate.create` | mutation | **V0.5** 创建自定义模板 |
 | `promptTemplate.update` | mutation | **V0.5** 更新模板 |
 | `promptTemplate.delete` | mutation | **V0.5** 删除模板（预设不可删） |
+| `promptTemplate.importFile` | mutation | **V0.5.1** 导入 .skill/.md 文件为模板 |
 
 ---
 
@@ -293,7 +297,8 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | V0.3.1 | 2026-02-27 | 新增话题导出功能：导出 Markdown / PDF |
 | V0.4 | 2026-02-27 | 自定义 Prompt 模板、Chunk 合并优化、用户管理全局化、改密码、Admin 增强 |
 | V0.4.2 | 2026-02-27 | Chunk 合并改为按话题维度、修复 Prompt 模板选择器点击 bug |
-| **V0.5** | **2026-02-27** | **LLM Service 多 Provider 抽象层、配置管理、设置页 UI、多 Prompt 模板管理（DB 迁移）** |
+| V0.5 | 2026-02-27 | LLM Service 多 Provider 抽象层、配置管理、设置页 UI、多 Prompt 模板管理（DB 迁移） |
+| **V0.5.1** | **2026-02-27** | **LLM 调用自动重试、OpenRouter 模型列表下拉搜索、Skill 文件导入（.skill/.md）、模板编辑增强** |
 
 ---
 
@@ -346,3 +351,6 @@ pnpm start
 11. 设置页在 `/settings`，模板管理在 `/settings/templates`
 12. API key 存储使用 base64 编码（`encodeApiKey` / `decodeApiKey`）
 13. 金瓶梅的原始 chunks 数据已保留，merged_chunks 是独立的新增层
+14. **V0.5.1** `callLLM` 内置自动重试（失败后等 1s，最多重试 2 次），解决 OpenRouter 冷启动超时问题
+15. **V0.5.1** 设置页模型选择改为下拉搜索框（OpenRouter 自动拉取模型列表，带缓存）
+16. **V0.5.1** 模板管理支持 .skill/.md 文件导入，模板编辑器增强（可拖拽、字符计数、内容预览）

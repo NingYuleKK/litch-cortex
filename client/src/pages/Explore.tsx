@@ -32,7 +32,13 @@ export default function Explore({ projectId }: { projectId: number }) {
       setResult(data as ExploreResult);
     },
     onError: (err) => {
-      toast.error(err.message);
+      // Show friendly error message instead of raw JSON
+      const msg = err.message || "未知错误";
+      if (msg.includes("LLM") || msg.includes("timeout") || msg.includes("API")) {
+        toast.error(msg, { duration: 6000 });
+      } else {
+        toast.error(`探索失败，请稍后重试。${msg.length > 100 ? "" : " (" + msg + ")"}`, { duration: 5000 });
+      }
     },
   });
 
