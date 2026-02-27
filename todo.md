@@ -43,3 +43,32 @@
 - [x] 修复 PDF 解析报错：PicoPico运营策略与集群.pdf 解析出 0 个分段（根因：Base64 编码后 31MB 超出网关限制，改用 multipart/form-data）
 - [x] 增强 PDF 解析的容错性，处理空文本或特殊格式 PDF（uploadRoute.ts 包含完整错误处理）
 - [x] 推送修复到 GitHub 并保存 checkpoint
+
+## V0.3 迭代
+
+### 任务一：修复文件名乱码
+- [x] 修复 multer multipart 上传中文文件名乱码问题
+- [x] 确保中文文件名正确存储和显示
+
+### 任务二：话题探索功能
+- [x] 后端：关键词检索当前项目 chunks
+- [x] 后端：将相关 chunks 发给 LLM 整理结构化话题总结
+- [x] 后端：保存为 Topic 的 API
+- [x] 前端：话题探索页面（搜索框 + 结果展示 + 保存按钮）
+- [x] 前端：项目工作区侧边栏增加"话题探索"入口
+
+### 任务三：独立认证系统
+- [x] 新增独立 cortex_users 表（id, username, password_hash, role, created_at）
+- [x] 密码哈希（bcrypt）
+- [x] JWT 认证中间件（替换 Manus OAuth）
+- [x] 登录 API + 注册 API（admin only）
+- [x] 前端独立登录页（用户名+密码）
+- [x] 前端顶部显示当前用户 + 退出登录
+- [x] 数据隔离：projects 关联 cortex_user_id
+- [x] 默认创建 admin 用户（litch / cortex2026）
+- [x] Admin 用户管理页面
+
+### 交付
+- [x] 更新 Vitest 测试（19 个测试全部通过）
+- [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+- [x] 保存 checkpoint

@@ -1,7 +1,8 @@
-import { eq, sql, desc, asc, and, inArray } from "drizzle-orm";
+import { eq, sql, desc, asc, and, inArray, like, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser, users,
+  cortexUsers, InsertCortexUser, CortexUser,
   projects, InsertProject, Project,
   documents, InsertDocument, Document,
   chunks, InsertChunk, Chunk,
@@ -25,7 +26,7 @@ export async function getDb() {
   return _db;
 }
 
-// ─── User Helpers ───────────────────────────────────────────────────
+// ─── User Helpers (Manus OAuth - kept for compatibility) ───────────
 
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
@@ -82,11 +83,12 @@ export async function getUserByOpenId(openId: string) {
 
 // ─── Project Helpers ────────────────────────────────────────────────
 
-export async function createProject(data: { userId: number; name: string; description?: string }): Promise<number> {
+export async function createProject(data: { userId: number; cortexUserId?: number; name: string; description?: string }): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const result = await db.insert(projects).values({
     userId: data.userId,
+    cortexUserId: data.cortexUserId ?? null,
     name: data.name,
     description: data.description ?? null,
   });
@@ -96,11 +98,11 @@ export async function createProject(data: { userId: number; name: string; descri
 export async function getProjectsByUser(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  // Get projects with document count
-  const rows = await db
+  return db
     .select({
       id: projects.id,
       userId: projects.userId,
+      cortexUserId: projects.cortexUserId,
       name: projects.name,
       description: projects.description,
       createdAt: projects.createdAt,
@@ -111,7 +113,26 @@ export async function getProjectsByUser(userId: number) {
     .where(eq(projects.userId, userId))
     .groupBy(projects.id)
     .orderBy(desc(projects.createdAt));
-  return rows;
+}
+
+export async function getProjectsByCortexUser(cortexUserId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: projects.id,
+      userId: projects.userId,
+      cortexUserId: projects.cortexUserId,
+      name: projects.name,
+      description: projects.description,
+      createdAt: projects.createdAt,
+      docCount: sql<number>`COUNT(${documents.id})`.as("docCount"),
+    })
+    .from(projects)
+    .leftJoin(documents, eq(projects.id, documents.projectId))
+    .where(eq(projects.cortexUserId, cortexUserId))
+    .groupBy(projects.id)
+    .orderBy(desc(projects.createdAt));
 }
 
 export async function getProjectById(id: number) {
@@ -221,6 +242,35 @@ export async function getChunkById(id: number) {
   return result[0];
 }
 
+// ─── Chunk Search (keyword matching for topic exploration) ──────────
+
+export async function searchChunksByKeyword(projectId: number, keyword: string, limit = 30) {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Split keyword into individual terms for broader matching
+  const terms = keyword.trim().split(/\s+/).filter(t => t.length > 0);
+  if (terms.length === 0) return [];
+
+  const conditions = terms.map(term => like(chunks.content, `%${term}%`));
+
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      filename: documents.filename,
+    })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(and(eq(documents.projectId, projectId), or(...conditions)))
+    .orderBy(desc(chunks.createdAt))
+    .limit(limit);
+}
+
 // ─── Topic Helpers ──────────────────────────────────────────────────
 
 export async function findOrCreateTopic(label: string, description?: string): Promise<number> {
@@ -255,22 +305,16 @@ export async function getAllTopicsWithCount() {
     .orderBy(desc(topics.weight));
 }
 
-/**
- * Get topics scoped to a specific project.
- * Joins through chunk_topics → chunks → documents to filter by projectId.
- */
 export async function getTopicsByProject(projectId: number) {
   const db = await getDb();
   if (!db) return [];
 
-  // Find all chunk IDs belonging to this project
   const projectChunkIds = db
     .select({ id: chunks.id })
     .from(chunks)
     .innerJoin(documents, eq(chunks.documentId, documents.id))
     .where(eq(documents.projectId, projectId));
 
-  // Get topics that have at least one chunk in this project
   return db
     .select({
       id: topics.id,
@@ -315,9 +359,6 @@ export async function getChunksByTopic(topicId: number) {
     .orderBy(desc(chunkTopics.relevanceScore));
 }
 
-/**
- * Get chunks for a topic, scoped to a specific project.
- */
 export async function getChunksByTopicAndProject(topicId: number, projectId: number) {
   const db = await getDb();
   if (!db) return [];

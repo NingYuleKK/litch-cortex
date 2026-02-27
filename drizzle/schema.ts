@@ -1,7 +1,7 @@
 import { int, mysqlEnum, mysqlTable, text, mediumtext, timestamp, varchar, float, bigint } from "drizzle-orm/mysql-core";
 
 /**
- * Core user table backing auth flow.
+ * Core user table backing Manus OAuth flow (kept for compatibility).
  */
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
@@ -19,11 +19,28 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 /**
+ * Independent Cortex users - username/password auth (replaces Manus OAuth for production)
+ */
+export const cortexUsers = mysqlTable("cortex_users", {
+  id: int("id").autoincrement().primaryKey(),
+  username: varchar("username", { length: 64 }).notNull().unique(),
+  passwordHash: varchar("passwordHash", { length: 256 }).notNull(),
+  displayName: varchar("displayName", { length: 128 }),
+  role: mysqlEnum("role", ["admin", "member"]).default("member").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  lastSignedIn: timestamp("lastSignedIn"),
+});
+
+export type CortexUser = typeof cortexUsers.$inferSelect;
+export type InsertCortexUser = typeof cortexUsers.$inferInsert;
+
+/**
  * Projects - top-level grouping for documents
  */
 export const projects = mysqlTable("projects", {
   id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull(),
+  userId: int("userId").notNull(), // legacy Manus OAuth user id
+  cortexUserId: int("cortexUserId"), // new independent auth user id
   name: varchar("name", { length: 256 }).notNull(),
   description: text("description"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

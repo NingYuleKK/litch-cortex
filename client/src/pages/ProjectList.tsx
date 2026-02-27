@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useCortexAuth } from "@/hooks/useCortexAuth";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,23 +13,23 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Brain, Plus, FolderOpen, FileText, Loader2, LogOut } from "lucide-react";
+import { Brain, Plus, FolderOpen, FileText, Loader2, LogOut, Shield } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { getLoginUrl } from "@/const";
-import { DashboardLayoutSkeleton } from "@/components/DashboardLayoutSkeleton";
 
 export default function ProjectList() {
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout } = useCortexAuth();
   const [, setLocation] = useLocation();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
-  const { data: projects, isLoading, refetch } = trpc.project.list.useQuery(undefined, {
-    enabled: !!user,
-  });
+  // Use authenticated project listing (context.ts handles cortex auth automatically)
+  const { data: projects, isLoading, refetch } = trpc.project.list.useQuery(
+    undefined,
+    { enabled: !!user },
+  );
 
   const createMutation = trpc.project.create.useMutation({
     onSuccess: (result) => {
@@ -44,33 +44,20 @@ export default function ProjectList() {
   });
 
   if (loading) {
-    return <DashboardLayoutSkeleton />;
-  }
-
-  if (!user) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-background">
-        <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
-          <div className="flex flex-col items-center gap-4">
-            <Brain className="h-12 w-12 text-primary" />
-            <h1 className="text-2xl font-semibold tracking-tight text-center text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-              Litch's Cortex
-            </h1>
-            <p className="text-sm text-muted-foreground text-center max-w-sm">
-              对话资产治理工具 —— 登录以继续
-            </p>
-          </div>
-          <Button
-            onClick={() => { window.location.href = getLoginUrl(); }}
-            size="lg"
-            className="w-full"
-          >
-            登录
-          </Button>
-        </div>
+        <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
       </div>
     );
   }
+
+  // Should not reach here if not authenticated (App.tsx handles redirect)
+  if (!user) return null;
+
+  const handleLogout = async () => {
+    await logout();
+    setLocation("/login");
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -78,14 +65,17 @@ export default function ProjectList() {
       <header className="border-b border-border bg-card/50 backdrop-blur sticky top-0 z-40">
         <div className="container max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Brain className="h-5 w-5 text-primary" />
+            <Brain className="h-5 w-5 text-cyan-400" />
             <span className="font-semibold tracking-tight text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
               CORTEX
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{user.name}</span>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={logout}>
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              {user.displayName || user.username}
+              {user.role === "admin" && <Shield className="w-3.5 h-3.5 text-cyan-400" />}
+            </span>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleLogout}>
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
@@ -106,7 +96,7 @@ export default function ProjectList() {
 
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button className="gap-2">
+              <Button className="gap-2 bg-cyan-600 hover:bg-cyan-500 text-white">
                 <Plus className="h-4 w-4" />
                 新建项目
               </Button>
@@ -125,7 +115,7 @@ export default function ProjectList() {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="例如：金瓶梅研究"
-                    className="bg-secondary/30 border-border"
+                    className="bg-background border-border"
                   />
                 </div>
                 <div className="space-y-2">
@@ -134,21 +124,22 @@ export default function ProjectList() {
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="简要描述项目内容和目标..."
-                    className="bg-secondary/30 border-border resize-none"
+                    className="bg-background border-border resize-none"
                     rows={3}
                   />
                 </div>
               </div>
               <DialogFooter>
-                <Button
-                  variant="outline"
-                  onClick={() => setOpen(false)}
-                >
+                <Button variant="outline" onClick={() => setOpen(false)}>
                   取消
                 </Button>
                 <Button
-                  onClick={() => createMutation.mutate({ name, description: description || undefined })}
+                  onClick={() => createMutation.mutate({
+                    name,
+                    description: description || undefined,
+                  })}
                   disabled={!name.trim() || createMutation.isPending}
+                  className="bg-cyan-600 hover:bg-cyan-500 text-white"
                 >
                   {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
                   创建
@@ -161,23 +152,23 @@ export default function ProjectList() {
         {/* Projects Grid */}
         {isLoading ? (
           <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <Loader2 className="h-6 w-6 animate-spin text-cyan-400" />
           </div>
         ) : projects && projects.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {projects.map((project) => (
               <Card
                 key={project.id}
-                className="bg-card border-border hover:border-primary/40 transition-all cursor-pointer group"
+                className="bg-card border-border hover:border-cyan-500/40 transition-all cursor-pointer group"
                 onClick={() => setLocation(`/project/${project.id}`)}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start gap-3">
-                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/20 transition-colors">
-                      <FolderOpen className="h-5 w-5 text-primary" />
+                    <div className="h-10 w-10 rounded-lg bg-cyan-500/10 flex items-center justify-center shrink-0 group-hover:bg-cyan-500/20 transition-colors">
+                      <FolderOpen className="h-5 w-5 text-cyan-400" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <h3 className="font-medium text-foreground truncate group-hover:text-primary transition-colors">
+                      <h3 className="font-medium text-foreground truncate group-hover:text-cyan-400 transition-colors">
                         {project.name}
                       </h3>
                       {project.description && (

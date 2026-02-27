@@ -8,7 +8,8 @@ import {
   insertChunks, getChunksByDocument, getAllChunksByUser, getAllChunksByProject, getChunkById,
   findOrCreateTopic, getAllTopicsWithCount, getTopicsByProject, getTopicById, getChunksByTopic, getChunksByTopicAndProject,
   linkChunkToTopic, getSummaryByTopic, upsertSummary,
-  createProject, getProjectsByUser, getProjectById, updateProject,
+  createProject, getProjectsByUser, getProjectsByCortexUser, getProjectById, updateProject,
+  searchChunksByKeyword,
 } from "./db";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
@@ -84,8 +85,18 @@ export const appRouter = router({
   // ─── Project Management ──────────────────────────────────────────
   project: router({
     list: protectedProcedure.query(async ({ ctx }) => {
+      // Use cortexUserId if available (independent auth), otherwise fall back to Manus user id
+      if (ctx.cortexUserId) {
+        return getProjectsByCortexUser(ctx.cortexUserId);
+      }
       return getProjectsByUser(ctx.user.id);
     }),
+
+    listByCortexUser: publicProcedure
+      .input(z.object({ cortexUserId: z.number() }))
+      .query(async ({ input }) => {
+        return getProjectsByCortexUser(input.cortexUserId);
+      }),
 
     create: protectedProcedure
       .input(z.object({
@@ -95,6 +106,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const id = await createProject({
           userId: ctx.user.id,
+          cortexUserId: ctx.cortexUserId ?? undefined,
           name: input.name,
           description: input.description,
         });
@@ -139,12 +151,8 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const buffer = Buffer.from(input.fileBase64, "base64");
-
-        // 1. Upload to S3
         const fileKey = `cortex/${ctx.user.id}/pdfs/${nanoid()}-${input.filename}`;
         const { url: fileUrl } = await storagePut(fileKey, buffer, "application/pdf");
-
-        // 2. Create document record
         const docId = await createDocument({
           userId: ctx.user.id,
           projectId: input.projectId ?? null,
@@ -152,13 +160,9 @@ export const appRouter = router({
           fileUrl,
           status: "parsing",
         });
-
-        // 3. Parse PDF
         try {
           const rawText = await parsePdfBuffer(buffer);
           const textChunks = chunkText(rawText);
-
-          // 4. Insert chunks
           const chunkData = textChunks.map((content, idx) => ({
             documentId: docId,
             content,
@@ -166,14 +170,7 @@ export const appRouter = router({
             tokenCount: content.length,
           }));
           await insertChunks(chunkData);
-
-          // 5. Update document
-          await updateDocument(docId, {
-            rawText,
-            status: "done",
-            chunkCount: textChunks.length,
-          });
-
+          await updateDocument(docId, { rawText, status: "done", chunkCount: textChunks.length });
           return { id: docId, chunkCount: textChunks.length, status: "done" };
         } catch (err: any) {
           await updateDocument(docId, { status: "error" });
@@ -211,7 +208,6 @@ export const appRouter = router({
         return getChunkById(input.id);
       }),
 
-    // Extract topics for a single chunk
     extractTopics: protectedProcedure
       .input(z.object({ chunkId: z.number() }))
       .mutation(async ({ input }) => {
@@ -350,7 +346,6 @@ export const appRouter = router({
         }
 
         await updateDocument(input.documentId, { status: "done" });
-
         return { processed, total: docChunks.length, errors };
       }),
   }),
@@ -440,6 +435,116 @@ export const appRouter = router({
 
         const id = await upsertSummary(input.topicId, summaryText);
         return { id, summaryText };
+      }),
+  }),
+
+  // ─── Topic Exploration (keyword search + LLM synthesis) ───────────
+  explore: router({
+    search: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        query: z.string().min(1).max(500),
+      }))
+      .mutation(async ({ input }) => {
+        // 1. Search chunks by keyword
+        const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+
+        if (matchedChunks.length === 0) {
+          return {
+            title: input.query,
+            summary: "未找到与该关键词相关的内容片段。请尝试其他关键词。",
+            chunks: [],
+            chunkCount: 0,
+          };
+        }
+
+        // 2. Prepare chunks text for LLM (limit to avoid token overflow)
+        const topChunks = matchedChunks.slice(0, 15);
+        const chunksText = topChunks.map((c, i) => `[片段 ${i + 1} - 来自: ${c.filename}]\n${c.content}`).join("\n\n---\n\n");
+
+        // 3. Call LLM to synthesize
+        const response = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content: `你是一个专业的知识整理助手。用户正在探索关于「${input.query}」的话题。
+请根据以下相关文本片段，生成一份结构化的话题总结。
+
+要求：
+- 给出一个精炼的话题标题（5-15字）
+- 总结涵盖所有片段的核心观点和关键信息
+- 使用清晰的中文表达
+- 长度适中（300-800字）
+- 可以使用 Markdown 格式
+- 在总结末尾标注引用了哪些片段编号
+
+返回 JSON 格式：
+{"title": "话题标题", "summary": "总结内容（Markdown）"}`,
+            },
+            { role: "user", content: chunksText },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "topic_exploration",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  summary: { type: "string" },
+                },
+                required: ["title", "summary"],
+                additionalProperties: false,
+              },
+            },
+          },
+        });
+
+        const content = response.choices[0]?.message?.content;
+        if (!content || typeof content !== "string") {
+          return {
+            title: input.query,
+            summary: "LLM 生成失败，请稍后重试。",
+            chunks: topChunks,
+            chunkCount: matchedChunks.length,
+          };
+        }
+
+        const parsed = JSON.parse(content);
+        return {
+          title: parsed.title,
+          summary: parsed.summary,
+          chunks: topChunks,
+          chunkCount: matchedChunks.length,
+        };
+      }),
+
+    saveAsTopic: protectedProcedure
+      .input(z.object({
+        title: z.string().min(1),
+        summary: z.string(),
+        chunkIds: z.array(z.number()),
+      }))
+      .mutation(async ({ input }) => {
+        // 1. Create or find topic
+        const topicId = await findOrCreateTopic(input.title);
+
+        // 2. Link chunks to topic
+        for (const chunkId of input.chunkIds) {
+          try {
+            await linkChunkToTopic(chunkId, topicId, 1.0);
+          } catch {
+            // Ignore duplicate links
+          }
+        }
+
+        // 3. Save summary
+        if (input.summary) {
+          await upsertSummary(topicId, input.summary);
+        }
+
+        return { topicId };
       }),
   }),
 });

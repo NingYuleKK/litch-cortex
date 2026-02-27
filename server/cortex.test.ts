@@ -53,7 +53,6 @@ describe("chunkText", () => {
   });
 
   it("should handle very large text (200K+ chars)", () => {
-    // Simulate a large PDF text (~200K chars)
     const para = "这是一段较长的测试文本，用于模拟大型PDF文件的解析结果。".repeat(20);
     const paragraphs = Array(200).fill(para);
     const text = paragraphs.join("\n\n");
@@ -65,10 +64,10 @@ describe("chunkText", () => {
   });
 });
 
-// ─── Test router structure ──────────────────────────────────────────
+// ─── Test router structure (V0.3 updated) ──────────────────────────
 
 describe("appRouter structure", () => {
-  it("should have all expected procedures including project routes", () => {
+  it("should have all expected procedures including V0.3 explore routes", () => {
     expect(appRouter).toBeDefined();
     const procedures = Object.keys((appRouter as any)._def.procedures);
 
@@ -82,9 +81,9 @@ describe("appRouter structure", () => {
     expect(procedures).toContain("project.get");
     expect(procedures).toContain("project.update");
 
-    // Document management — upload is now via Express route, not tRPC
+    // Document management
     expect(procedures).toContain("document.list");
-    expect(procedures).toContain("document.upload"); // kept as fallback for small files
+    expect(procedures).toContain("document.upload");
     expect(procedures).toContain("document.get");
     expect(procedures).toContain("document.chunks");
 
@@ -105,6 +104,10 @@ describe("appRouter structure", () => {
     expect(procedures).toContain("summary.get");
     expect(procedures).toContain("summary.save");
     expect(procedures).toContain("summary.generate");
+
+    // V0.3: Topic Exploration
+    expect(procedures).toContain("explore.search");
+    expect(procedures).toContain("explore.saveAsTopic");
   });
 });
 
@@ -113,12 +116,32 @@ describe("appRouter structure", () => {
 function createUnauthContext(): TrpcContext {
   return {
     user: null,
-    req: { protocol: "https", headers: {} } as TrpcContext["req"],
+    cortexUserId: null,
+    req: { protocol: "https", headers: {}, cookies: {} } as unknown as TrpcContext["req"],
     res: { clearCookie: () => {} } as unknown as TrpcContext["res"],
   };
 }
 
-describe("auth protection", () => {
+function createCortexAuthContext(): TrpcContext {
+  return {
+    user: {
+      id: 1,
+      openId: "cortex-1",
+      email: null,
+      name: "Litch",
+      loginMethod: "cortex",
+      role: "admin",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    },
+    cortexUserId: 1,
+    req: { protocol: "https", headers: {}, cookies: {} } as unknown as TrpcContext["req"],
+    res: { clearCookie: () => {} } as unknown as TrpcContext["res"],
+  };
+}
+
+describe("auth protection (V0.3)", () => {
   it("should return null for unauthenticated me query", async () => {
     const ctx = createUnauthContext();
     const caller = appRouter.createCaller(ctx);
@@ -158,5 +181,36 @@ describe("auth protection", () => {
     await expect(
       caller.summary.generate({ topicId: 1 })
     ).rejects.toThrow();
+  });
+
+  // V0.3: Explore routes protection
+  it("should reject explore.search for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.explore.search({ projectId: 1, query: "test" })
+    ).rejects.toThrow();
+  });
+
+  it("should reject explore.saveAsTopic for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.explore.saveAsTopic({ title: "Test", summary: "Test", chunkIds: [1] })
+    ).rejects.toThrow();
+  });
+
+  // V0.3: Cortex auth context should work
+  it("should allow cortex-authenticated user to access auth.me", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.auth.me();
+    expect(result).not.toBeNull();
+    expect(result?.name).toBe("Litch");
+  });
+
+  it("cortexUserId should be available in context", () => {
+    const ctx = createCortexAuthContext();
+    expect(ctx.cortexUserId).toBe(1);
   });
 });

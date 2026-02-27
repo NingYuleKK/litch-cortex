@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useCortexAuth } from "@/hooks/useCortexAuth";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -6,6 +6,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -24,18 +25,18 @@ import {
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   Upload, FileText, Tags, Brain, LogOut, PanelLeft,
-  ChevronLeft, FolderOpen, Loader2,
+  ChevronLeft, FolderOpen, Loader2, Sparkles, Users, Shield,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState, useMemo } from "react";
 import { useLocation, useParams } from "wouter";
-import { DashboardLayoutSkeleton } from "@/components/DashboardLayoutSkeleton";
-import { getLoginUrl } from "@/const";
 
 // Sub-pages
 import UploadPage from "./Home";
 import ChunksPage from "./Chunks";
 import TopicsPage from "./Topics";
 import TopicDetailPage from "./TopicDetail";
+import ExplorePage from "./Explore";
+import UserManagementPage from "./UserManagement";
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 260;
@@ -45,7 +46,7 @@ const MAX_WIDTH = 400;
 export default function ProjectWorkspace() {
   const params = useParams<{ projectId: string; tab?: string; topicId?: string }>();
   const projectId = parseInt(params.projectId || "0");
-  const { loading, user } = useAuth();
+  const { loading, user } = useCortexAuth();
 
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
@@ -56,23 +57,16 @@ export default function ProjectWorkspace() {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarWidth]);
 
-  if (loading) return <DashboardLayoutSkeleton />;
-
-  if (!user) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-background">
-        <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
-          <Brain className="h-12 w-12 text-primary" />
-          <h1 className="text-2xl font-semibold text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-            Litch's Cortex
-          </h1>
-          <Button onClick={() => { window.location.href = getLoginUrl(); }} size="lg" className="w-full">
-            登录
-          </Button>
-        </div>
+        <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
       </div>
     );
   }
+
+  // Should not reach here if not authenticated (App.tsx handles redirect)
+  if (!user) return null;
 
   return (
     <SidebarProvider
@@ -99,7 +93,7 @@ function WorkspaceContent({
   topicId?: string;
   setSidebarWidth: (w: number) => void;
 }) {
-  const { user, logout } = useAuth();
+  const { user, logout } = useCortexAuth();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
   const isCollapsed = state === "collapsed";
@@ -114,12 +108,13 @@ function WorkspaceContent({
 
   // Determine active tab from URL
   const activeTab = useMemo(() => {
-    // Check if we're on a topic detail page: /project/:id/topics/:topicId
     if (location.match(/^\/project\/\d+\/topics\/\d+$/)) {
       return "topic-detail";
     }
     if (tab === "chunks") return "chunks";
     if (tab === "topics") return "topics";
+    if (tab === "explore") return "explore";
+    if (tab === "users") return "users";
     return "upload";
   }, [tab, location]);
 
@@ -127,9 +122,16 @@ function WorkspaceContent({
     { icon: Upload, label: "上传文档", key: "upload", path: `/project/${projectId}` },
     { icon: FileText, label: "分段预览", key: "chunks", path: `/project/${projectId}/chunks` },
     { icon: Tags, label: "话题列表", key: "topics", path: `/project/${projectId}/topics` },
+    { icon: Sparkles, label: "话题探索", key: "explore", path: `/project/${projectId}/explore` },
   ];
 
-  const activeMenuItem = menuItems.find(item => item.key === activeTab) || menuItems[0];
+  // Admin-only menu items
+  const adminItems = user?.role === "admin" ? [
+    { icon: Users, label: "用户管理", key: "users", path: `/project/${projectId}/users` },
+  ] : [];
+
+  const allMenuItems = [...menuItems, ...adminItems];
+  const activeMenuItem = allMenuItems.find(item => item.key === activeTab) || menuItems[0];
 
   useEffect(() => {
     if (isCollapsed) setIsResizing(false);
@@ -166,6 +168,11 @@ function WorkspaceContent({
     return match ? parseInt(match[1]) : undefined;
   }, [location]);
 
+  const handleLogout = async () => {
+    await logout();
+    setLocation("/login");
+  };
+
   return (
     <>
       <div className="relative" ref={sidebarRef}>
@@ -180,7 +187,7 @@ function WorkspaceContent({
               </button>
               {!isCollapsed && (
                 <div className="flex items-center gap-2 min-w-0">
-                  <Brain className="h-5 w-5 text-primary shrink-0" />
+                  <Brain className="h-5 w-5 text-cyan-400 shrink-0" />
                   <span className="font-semibold tracking-tight truncate text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                     CORTEX
                   </span>
@@ -208,7 +215,7 @@ function WorkspaceContent({
             {!isCollapsed && project && (
               <div className="px-4 py-2 mb-1">
                 <div className="flex items-center gap-2">
-                  <FolderOpen className="h-4 w-4 text-primary shrink-0" />
+                  <FolderOpen className="h-4 w-4 text-cyan-400 shrink-0" />
                   <span className="text-sm font-medium text-foreground truncate">
                     {project.name}
                   </span>
@@ -233,13 +240,42 @@ function WorkspaceContent({
                       tooltip={item.label}
                       className="h-10 transition-all font-normal"
                     >
-                      <item.icon className={`h-4 w-4 ${isActive ? "text-primary" : ""}`} />
+                      <item.icon className={`h-4 w-4 ${isActive ? "text-cyan-400" : ""}`} />
                       <span>{item.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );
               })}
             </SidebarMenu>
+
+            {/* Admin section */}
+            {adminItems.length > 0 && (
+              <>
+                {!isCollapsed && (
+                  <div className="px-4 py-2 mt-2">
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">管理</span>
+                  </div>
+                )}
+                <SidebarMenu className="px-2">
+                  {adminItems.map(item => {
+                    const isActive = item.key === activeTab;
+                    return (
+                      <SidebarMenuItem key={item.key}>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          onClick={() => setLocation(item.path)}
+                          tooltip={item.label}
+                          className="h-10 transition-all font-normal"
+                        >
+                          <item.icon className={`h-4 w-4 ${isActive ? "text-cyan-400" : ""}`} />
+                          <span>{item.label}</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </>
+            )}
           </SidebarContent>
 
           <SidebarFooter className="p-3">
@@ -247,23 +283,30 @@ function WorkspaceContent({
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none">
                   <Avatar className="h-9 w-9 border shrink-0">
-                    <AvatarFallback className="text-xs font-medium bg-primary/20 text-primary">
-                      {user?.name?.charAt(0).toUpperCase()}
+                    <AvatarFallback className="text-xs font-medium bg-cyan-500/20 text-cyan-400">
+                      {(user?.displayName || user?.username || "?").charAt(0).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
                     <p className="text-sm font-medium truncate leading-none text-foreground">
-                      {user?.name || "-"}
+                      {user?.displayName || user?.username || "-"}
                     </p>
-                    <p className="text-xs text-muted-foreground truncate mt-1.5">
-                      {user?.email || "-"}
+                    <p className="text-xs text-muted-foreground truncate mt-1.5 flex items-center gap-1">
+                      @{user?.username}
+                      {user?.role === "admin" && (
+                        <Shield className="w-3 h-3 text-cyan-400 inline" />
+                      )}
                     </p>
                   </div>
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  {user?.role === "admin" ? "管理员" : "成员"}
+                </div>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={logout}
+                  onClick={handleLogout}
                   className="cursor-pointer text-destructive focus:text-destructive"
                 >
                   <LogOut className="mr-2 h-4 w-4" />
@@ -274,7 +317,7 @@ function WorkspaceContent({
           </SidebarFooter>
         </Sidebar>
         <div
-          className={`absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors ${isCollapsed ? "hidden" : ""}`}
+          className={`absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-cyan-500/20 transition-colors ${isCollapsed ? "hidden" : ""}`}
           onMouseDown={() => { if (!isCollapsed) setIsResizing(true); }}
           style={{ zIndex: 50 }}
         />
@@ -295,6 +338,8 @@ function WorkspaceContent({
           {activeTab === "upload" && <UploadPage projectId={projectId} />}
           {activeTab === "chunks" && <ChunksPage projectId={projectId} />}
           {activeTab === "topics" && <TopicsPage projectId={projectId} />}
+          {activeTab === "explore" && <ExplorePage projectId={projectId} />}
+          {activeTab === "users" && <UserManagementPage />}
           {activeTab === "topic-detail" && topicIdFromUrl && (
             <TopicDetailPage projectId={projectId} topicId={topicIdFromUrl} />
           )}

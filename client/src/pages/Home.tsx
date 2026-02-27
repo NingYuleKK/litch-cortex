@@ -24,6 +24,7 @@ async function uploadPdfFile(
   const response = await fetch("/api/upload/pdf", {
     method: "POST",
     body: formData,
+    credentials: "include",
     // Do NOT set Content-Type header — browser sets it with boundary automatically
   });
 
