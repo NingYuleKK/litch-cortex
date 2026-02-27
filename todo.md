@@ -216,5 +216,5 @@
 
 ### 交付
 - [x] 更新 Vitest 测试
-- [ ] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+- [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
 - [ ] 保存 checkpoint
