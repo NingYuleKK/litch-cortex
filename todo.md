@@ -38,3 +38,8 @@
 - [x] 话题列表和话题详情限定在当前项目范围内
 - [x] 更新 Vitest 测试
 - [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+
+## Bug 修复
+- [x] 修复 PDF 解析报错：PicoPico运营策略与集群.pdf 解析出 0 个分段（根因：Base64 编码后 31MB 超出网关限制，改用 multipart/form-data）
+- [x] 增强 PDF 解析的容错性，处理空文本或特殊格式 PDF（uploadRoute.ts 包含完整错误处理）
+- [x] 推送修复到 GitHub 并保存 checkpoint

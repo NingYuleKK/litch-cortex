@@ -1,4 +1,4 @@
-# HANDOVER_CORTEX.md — Litch's Cortex V0.2 交接文档
+# HANDOVER_CORTEX.md — Litch's Cortex V0.2.1 交接文档
 
 ## 项目概述
 
@@ -60,9 +60,9 @@ users: id, openId, name, email, role, ... (Manus OAuth)
 - 支持返回项目列表
 
 ### 3. PDF 上传与解析 (`/project/:id`)
-- 拖拽或点击上传 PDF（支持多文件批量）
-- 前端将 PDF 转为 Base64 发送到后端
-- 后端使用 pdf-parse 解析文本，按 500-800 字分段
+- 拖拽或点击上传 PDF（支持多文件批量，单文件最大 100MB）
+- **V0.2.1 修复**：前端使用 `multipart/form-data` + `fetch` 上传到独立 Express 路由 `/api/upload/pdf`（不再使用 Base64-in-tRPC-JSON，避免大文件超出网关 body size 限制）
+- 后端使用 multer 接收文件 + pdf-parse 解析文本，按 500-800 字分段
 - 分段存入 chunks 表，原文存入 documents 表
 - 上传后可触发 LLM 话题提取
 - 上传自动归属到当前项目
@@ -93,6 +93,7 @@ users: id, openId, name, email, role, ... (Manus OAuth)
 drizzle/schema.ts                      → 数据库表定义（含 projects 表）
 server/db.ts                           → 数据库查询层（所有 CRUD 操作）
 server/routers.ts                      → tRPC 路由（API 端点）
+server/uploadRoute.ts                  → PDF 上传 Express 路由（multipart/form-data，V0.2.1）
 client/src/App.tsx                     → 前端路由配置
 client/src/pages/ProjectList.tsx       → 项目列表首页（V0.2）
 client/src/pages/ProjectWorkspace.tsx  → 项目工作区容器（V0.2）
@@ -101,7 +102,7 @@ client/src/pages/Chunks.tsx            → 分段预览页（项目内）
 client/src/pages/Topics.tsx            → 话题列表页（项目内）
 client/src/pages/TopicDetail.tsx       → Topic 详情页（项目内）
 client/src/index.css                   → 赛博认知深色主题
-server/cortex.test.ts                  → Vitest 单元测试（13 个测试）
+server/cortex.test.ts                  → Vitest 单元测试（15 个测试）
 ```
 
 ---
@@ -115,7 +116,8 @@ server/cortex.test.ts                  → Vitest 单元测试（13 个测试）
 | `project.get` | query | 获取项目详情 |
 | `project.update` | mutation | 更新项目信息 |
 | `document.list` | query | 获取文档列表（支持 projectId 过滤） |
-| `document.upload` | mutation | 上传 PDF（Base64），解析分段存库 |
+| `document.upload` | mutation | 上传 PDF（Base64，小文件 fallback） |
+| `POST /api/upload/pdf` | REST | **主要上传方式**：multipart/form-data 上传 PDF，支持大文件（V0.2.1） |
 | `chunk.listAll` | query | 获取所有分段（支持 projectId 过滤） |
 | `extraction.extractDocument` | mutation | 对指定文档的所有 chunk 进行 LLM 话题提取 |
 | `topic.list` | query | 获取话题列表（支持 projectId 过滤） |
@@ -140,12 +142,12 @@ server/cortex.test.ts                  → Vitest 单元测试（13 个测试）
 
 ## 当前数据
 
-使用 10 个对话 PDF 完成了完整测试（含 5 个金瓶梅主题 + 5 个技术问题对话）：
+使用多个对话 PDF 完成了完整测试：
 
-- 1 个项目（金瓶梅研究）
-- 10 条文档记录
-- 639 个文本分段
-- 804 个话题标签
+- 2 个项目（金瓶梅研究 + PicoPico工作）
+- 11+ 条文档记录（含 24.5MB 大文件 PicoPico运营策略与集群.pdf）
+- 950+ 个文本分段
+- 800+ 个话题标签
 - 1 条 LLM 生成的摘要
 
 ---
@@ -156,6 +158,7 @@ server/cortex.test.ts                  → Vitest 单元测试（13 个测试）
 |------|------|------|
 | V0.1 | 2026-02-25 | MVP 骨架：PDF 上传解析、LLM 话题提取、Topic 详情页 |
 | V0.2 | 2026-02-25 | 新增项目区：projects 表、项目列表首页、项目工作区、数据隔离 |
+| V0.2.1 | 2026-02-27 | 修复大文件 PDF 上传失败：改用 multipart/form-data + multer，支持 100MB PDF |
 
 ---
 

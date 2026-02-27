@@ -1,56 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
+import { chunkText } from "./uploadRoute";
 import type { TrpcContext } from "./_core/context";
 
-// ─── Test the chunkText function by importing it indirectly ─────────
-// Since chunkText is not exported, we test it through the router behavior.
-// But we can also test the chunking logic directly by extracting it.
-
-// Replicate the chunkText logic for unit testing
-function chunkText(text: string, minSize = 500, maxSize = 800): string[] {
-  const results: string[] = [];
-  const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
-
-  let current = "";
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (current.length + trimmed.length + 1 <= maxSize) {
-      current = current ? current + "\n\n" + trimmed : trimmed;
-    } else {
-      if (current.length >= minSize) {
-        results.push(current);
-        current = trimmed;
-      } else if (current.length + trimmed.length + 1 <= maxSize * 1.2) {
-        current = current ? current + "\n\n" + trimmed : trimmed;
-      } else {
-        if (current) results.push(current);
-        current = trimmed;
-      }
-    }
-  }
-  if (current) results.push(current);
-
-  const finalResults: string[] = [];
-  for (const chunk of results) {
-    if (chunk.length <= maxSize * 1.5) {
-      finalResults.push(chunk);
-    } else {
-      const sentences = chunk.split(/(?<=[。！？.!?])\s*/);
-      let sub = "";
-      for (const sent of sentences) {
-        if (sub.length + sent.length + 1 <= maxSize) {
-          sub = sub ? sub + sent : sent;
-        } else {
-          if (sub) finalResults.push(sub);
-          sub = sent;
-        }
-      }
-      if (sub) finalResults.push(sub);
-    }
-  }
-
-  return finalResults.length > 0 ? finalResults : [text.slice(0, maxSize)];
-}
+// ─── Test the chunkText function (now exported from uploadRoute.ts) ──
 
 describe("chunkText", () => {
   it("should return at least one chunk for any non-empty text", () => {
@@ -60,12 +13,10 @@ describe("chunkText", () => {
   });
 
   it("should split long text into chunks within size limits", () => {
-    // Create text with multiple paragraphs
     const para = "这是一段测试文本。".repeat(80); // ~720 chars
     const text = `${para}\n\n${para}\n\n${para}`;
     const result = chunkText(text);
     expect(result.length).toBeGreaterThan(1);
-    // Each chunk should be within reasonable limits
     for (const chunk of result) {
       expect(chunk.length).toBeLessThanOrEqual(800 * 1.5);
     }
@@ -82,7 +33,6 @@ describe("chunkText", () => {
     const p2 = "B".repeat(400);
     const text = `${p1}\n\n${p2}`;
     const result = chunkText(text);
-    // Should combine into one chunk since total is 800 (within maxSize)
     expect(result.length).toBe(1);
     expect(result[0]).toContain("A");
     expect(result[0]).toContain("B");
@@ -94,6 +44,24 @@ describe("chunkText", () => {
     const text = `${p1}\n\n${p2}`;
     const result = chunkText(text);
     expect(result.length).toBe(2);
+  });
+
+  it("should handle text with null bytes gracefully", () => {
+    const text = "Hello\x00World\n\nSecond paragraph with\x00nulls";
+    const result = chunkText(text);
+    expect(result.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("should handle very large text (200K+ chars)", () => {
+    // Simulate a large PDF text (~200K chars)
+    const para = "这是一段较长的测试文本，用于模拟大型PDF文件的解析结果。".repeat(20);
+    const paragraphs = Array(200).fill(para);
+    const text = paragraphs.join("\n\n");
+    const result = chunkText(text);
+    expect(result.length).toBeGreaterThan(100);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(800 * 1.5);
+    }
   });
 });
 
@@ -114,9 +82,9 @@ describe("appRouter structure", () => {
     expect(procedures).toContain("project.get");
     expect(procedures).toContain("project.update");
 
-    // Document management
+    // Document management — upload is now via Express route, not tRPC
     expect(procedures).toContain("document.list");
-    expect(procedures).toContain("document.upload");
+    expect(procedures).toContain("document.upload"); // kept as fallback for small files
     expect(procedures).toContain("document.get");
     expect(procedures).toContain("document.chunks");
 
@@ -161,7 +129,6 @@ describe("auth protection", () => {
   it("should reject protected procedures for unauthenticated users", async () => {
     const ctx = createUnauthContext();
     const caller = appRouter.createCaller(ctx);
-    // document.list requires auth
     await expect(caller.document.list()).rejects.toThrow();
   });
 

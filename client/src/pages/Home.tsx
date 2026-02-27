@@ -7,16 +7,33 @@ import { useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      resolve(result.split(",")[1]);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+/**
+ * Upload PDF via multipart/form-data to /api/upload/pdf
+ * This bypasses tRPC JSON body size limits for large files.
+ */
+async function uploadPdfFile(
+  file: File,
+  projectId?: number
+): Promise<{ id: number; chunkCount: number; status: string; textLength?: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (projectId) {
+    formData.append("projectId", String(projectId));
+  }
+
+  const response = await fetch("/api/upload/pdf", {
+    method: "POST",
+    body: formData,
+    // Do NOT set Content-Type header — browser sets it with boundary automatically
   });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || `Upload failed (HTTP ${response.status})`);
+  }
+
+  return data;
 }
 
 const statusMap: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -37,7 +54,6 @@ export default function Home({ projectId }: { projectId?: number }) {
   const { data: documents, refetch: refetchDocs } = trpc.document.list.useQuery(
     projectId ? { projectId } : undefined
   );
-  const uploadMutation = trpc.document.upload.useMutation();
   const extractMutation = trpc.extraction.extractDocument.useMutation();
 
   const handleFiles = useCallback(async (files: FileList | File[]) => {
@@ -57,12 +73,15 @@ export default function Home({ projectId }: { projectId?: number }) {
         progress[i].status = "parsing";
         setUploadProgress([...progress]);
 
-        const base64 = await fileToBase64(file);
-        const result = await uploadMutation.mutateAsync({
-          filename: file.name,
-          fileBase64: base64,
-          projectId,
-        });
+        // Use multipart/form-data upload instead of Base64 tRPC
+        const result = await uploadPdfFile(file, projectId);
+
+        if (result.chunkCount === 0) {
+          progress[i].status = "error";
+          setUploadProgress([...progress]);
+          toast.error(`${file.name} 解析出 0 个分段，可能是扫描版 PDF`);
+          continue;
+        }
 
         progress[i].status = "extracting";
         setUploadProgress([...progress]);
@@ -85,7 +104,7 @@ export default function Home({ projectId }: { projectId?: number }) {
 
     setUploading(false);
     refetchDocs();
-  }, [uploadMutation, extractMutation, refetchDocs, projectId]);
+  }, [extractMutation, refetchDocs, projectId]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -144,7 +163,7 @@ export default function Home({ projectId }: { projectId?: number }) {
         <p className="text-foreground font-medium">
           {isDragging ? "释放文件以上传" : "拖拽 PDF 文件到此处，或点击选择"}
         </p>
-        <p className="text-sm text-muted-foreground mt-1">支持多文件批量上传</p>
+        <p className="text-sm text-muted-foreground mt-1">支持多文件批量上传，单文件最大 100MB</p>
       </div>
 
       {/* Upload Progress */}
