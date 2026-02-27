@@ -1,10 +1,10 @@
-# HANDOVER_CORTEX.md — Litch's Cortex V0.4 交接文档
+# HANDOVER_CORTEX.md — Litch's Cortex V0.4.2 交接文档
 
 ## 项目概述
 
-Litch's Cortex 是一个对话资产治理工具，用于管理 Litch 与多个 AI 进行深度对话产生的 PDF 记录。核心数据流为：**创建项目 → 上传 PDF → 解析分段 → LLM 语义合并 → LLM 提取话题标签 → 查看话题下的原文 → 生成总结**。
+Litch's Cortex 是一个对话资产治理工具，用于管理 Litch 与多个 AI 进行深度对话产生的 PDF 记录。核心数据流为：**创建项目 → 上传 PDF → 解析分段 → LLM 提取话题标签 → 查看话题下的原文 → 按话题合并分段 → 生成总结**。
 
-V0.1 打通了完整骨架和数据流。V0.2 新增了「项目区」功能。V0.3 新增了话题探索、独立认证系统、修复了中文文件名乱码。V0.4 新增了自定义 Prompt 模板、Chunk 合并优化、用户管理全局化、个人改密码、Admin 用户管理增强。
+V0.1 打通了完整骨架和数据流。V0.2 新增了「项目区」功能。V0.3 新增了话题探索、独立认证系统、修复了中文文件名乱码。V0.4 新增了自定义 Prompt 模板、Chunk 合并优化、用户管理全局化、个人改密码、Admin 用户管理增强。V0.4.2 将 Chunk 合并从按文档整体合并改为按话题维度合并。
 
 ---
 
@@ -16,7 +16,7 @@ V0.1 打通了完整骨架和数据流。V0.2 新增了「项目区」功能。V
 | 后端 | Node.js + Express + tRPC 11 | 类型安全的 RPC 接口 |
 | 数据库 | MySQL (TiDB) + Drizzle ORM | 托管在 Manus 平台 |
 | PDF 解析 | pdf-parse | 服务端解析 PDF 文本 |
-| LLM | Manus 内置 LLM API (invokeLLM) | 话题提取 + 摘要生成 + 话题探索 + **Chunk 合并**（V0.4） |
+| LLM | Manus 内置 LLM API (invokeLLM) | 话题提取 + 摘要生成 + 话题探索 + **按话题 Chunk 合并** |
 | 认证 | **独立用户名密码 + JWT**（V0.3） | 替代 Manus OAuth，支持独立部署 |
 | 密码哈希 | bcryptjs | 安全存储密码 |
 | 部署 | Manus 平台 | 一键部署 |
@@ -30,7 +30,7 @@ cortexUsers: id, username, passwordHash, initialPassword(V0.4), role(admin/membe
 projects: id, userId, cortexUserId, name, description, createdAt, updatedAt
 documents: id, userId, projectId, filename, fileUrl, rawText, status, chunkCount, uploadTime
 chunks: id, documentId, content, position, tokenCount, createdAt
-mergedChunks: id, documentId, projectId, content, sourceChunkIds(JSON), position, createdAt (V0.4)
+mergedChunks: id, topicId(V0.4.2), content, sourceChunkIds(JSON), position, createdAt
 topics: id, label, description, weight, createdAt
 chunk_topics: id, chunkId, topicId, relevanceScore
 summaries: id, topicId, summaryText, generatedAt
@@ -42,7 +42,7 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 - 一个 cortexUser 拥有多个 projects（一对多，通过 cortexUserId）
 - 一个 project 包含多个 documents（一对多）
 - 一个 document 包含多个 chunks（一对多）
-- 一个 document 可以有多个 mergedChunks（一对多，V0.4）
+- **一个 topic 可以有多个 mergedChunks（一对多，V0.4.2 改为按话题关联）**
 - mergedChunks 通过 sourceChunkIds（JSON 数组）引用原始 chunks
 - 一个 chunk 可以关联多个 topics，一个 topic 可以关联多个 chunks（多对多，通过 chunk_topics）
 - 一个 topic 对应一个 summary（一对一）
@@ -108,21 +108,21 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 - 拖拽或点击上传 PDF（支持多文件批量，单文件最大 100MB）
 - 使用 `multipart/form-data` + `fetch` 上传到 `/api/upload/pdf`
 - 后端使用 multer + pdf-parse 解析，按 500-800 字分段
-- **V0.4**：上传解析完成后自动触发 LLM 语义合并（后台异步执行）
 
 ### 5. 分段预览 (`/project/:id/chunks`)
 - Log 面板风格的分段列表
 - 显示行号、来源文件、位置、字数
-- **V0.4**：新增「原始分段 / 合并分段」切换按钮
-- **V0.4**：合并分段视图显示每个 merged_chunk 包含的原始 chunk 数量
-- **V0.4**：提供按文档「重新合并」按钮（手动触发 LLM 重新合并）
+- **V0.4.2**：「原始分段 / 合并分段」切换按钮
+- **V0.4.2**：合并分段视图按话题分组展示，每个话题下显示其合并块
+- 合并操作在话题详情页触发（不再在分段预览页触发）
 
 ### 6. 话题列表 (`/project/:id/topics`)
 - 三列网格布局展示话题
 - 每个话题显示标签、关联 chunk 数量、权重
 
 ### 7. Topic 详情页 (`/project/:id/topics/:topicId`)
-- 左侧：关联 chunks 原文列表
+- 左侧：关联 chunks 原文列表，支持「原始片段 / 合并片段」Tab 切换
+- **V0.4.2**：左侧新增「合并相关分段」/「重新合并」按钮
 - 右侧：LLM 生成摘要 + 手动编辑总结
 - 导出 MD / 导出 PDF 按钮
 - **V0.4**：生成摘要按钮旁增加 Prompt 模板选择器
@@ -130,7 +130,6 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 ### 8. 话题探索 (`/project/:id/explore`)
 - 用户输入关键词或问题
 - **V0.4**：搜索框旁增加 Prompt 模板选择器
-- **V0.4**：搜索优先使用 merged_chunks，无合并数据时回退到原始 chunks
 - 后端从当前项目中检索相关内容
 - 将相关内容发给 LLM 整理出结构化话题总结
 - 展示：话题标题 + 总结内容 + 关联原文片段
@@ -155,13 +154,15 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 - 自定义 prompt 使用 localStorage 缓存
 - 模板配置文件：`client/src/lib/promptTemplates.ts`
 
-### 12. Chunk 合并优化（V0.4 新增）
-- 新增 `merged_chunks` 表，保留原始 chunks 不动
-- 上传文档解析后自动触发 LLM 语义合并（后台异步）
-- 合并逻辑：每 5-8 个 chunks 为一组，LLM 判断语义相关性后合并
-- 已有文档可通过「重新合并」按钮手动触发
-- 话题探索搜索优先使用 merged_chunks
-- 分段预览页支持「原始分段 / 合并分段」切换
+### 12. Chunk 按话题合并（V0.4.2 重新设计）
+- **设计变更**：从 V0.4 的按文档整体合并，改为按话题维度合并
+- 在话题详情页点击「合并相关分段」按钮触发
+- 合并逻辑：获取该话题关联的所有 chunks → 每 5-8 个为一组 → LLM 判断语义相关性后合并
+- 合并结果存入 `merged_chunks` 表，通过 `topicId` 关联
+- 已有合并数据的话题显示「重新合并」按钮
+- 话题详情页左侧支持「原始片段 / 合并片段」Tab 切换
+- 分段预览页的合并分段 Tab 按话题分组展示所有已合并结果
+- 原始 chunks 完全不动，金瓶梅数据保留
 
 ---
 
@@ -169,10 +170,10 @@ users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 
 ```
 drizzle/schema.ts                      → 数据库表定义（含 cortexUsers、mergedChunks 表）
-server/db.ts                           → 数据库查询层（所有 CRUD 操作，含 merged chunk 操作）
+server/db.ts                           → 数据库查询层（所有 CRUD 操作，含按话题合并的 merged chunk 操作）
 server/routers.ts                      → tRPC 路由（API 端点，含 mergedChunk router）
-server/uploadRoute.ts                  → PDF 上传 Express 路由（含自动合并逻辑）
-server/authRoute.ts                    → 独立认证路由（含改密码、删除用户 API）（V0.4 增强）
+server/uploadRoute.ts                  → PDF 上传 Express 路由
+server/authRoute.ts                    → 独立认证路由（含改密码、删除用户 API）
 server/_core/context.ts                → tRPC 上下文（双认证模式）
 server/_core/index.ts                  → 服务器入口（注册路由）
 client/src/hooks/useCortexAuth.tsx     → 前端 Cortex 认证 hook（含改密码、删除用户方法）
@@ -181,18 +182,18 @@ client/src/pages/Login.tsx             → 登录页
 client/src/pages/ProjectList.tsx       → 项目列表首页（含全局导航栏）
 client/src/pages/ProjectWorkspace.tsx  → 项目工作区容器
 client/src/pages/Home.tsx              → PDF 上传页（项目内）
-client/src/pages/Chunks.tsx            → 分段预览页（含原始/合并切换，V0.4）
+client/src/pages/Chunks.tsx            → 分段预览页（含原始/合并切换，合并按话题分组展示）
 client/src/pages/Topics.tsx            → 话题列表页（项目内）
-client/src/pages/TopicDetail.tsx       → Topic 详情页（含 Prompt 模板选择器，V0.4）
-client/src/pages/Explore.tsx           → 话题探索页（含 Prompt 模板选择器，V0.4）
-client/src/pages/UserManagement.tsx    → 用户管理页（含初始密码显示、删除用户，V0.4）
-client/src/components/ChangePasswordDialog.tsx → 修改密码对话框（V0.4）
-client/src/components/PromptTemplateSelector.tsx → Prompt 模板选择器组件（V0.4）
-client/src/lib/promptTemplates.ts      → Prompt 模板配置（V0.4）
+client/src/pages/TopicDetail.tsx       → Topic 详情页（含合并按钮、Prompt 模板选择器）
+client/src/pages/Explore.tsx           → 话题探索页（含 Prompt 模板选择器）
+client/src/pages/UserManagement.tsx    → 用户管理页（含初始密码显示、删除用户）
+client/src/components/ChangePasswordDialog.tsx → 修改密码对话框
+client/src/components/PromptTemplateSelector.tsx → Prompt 模板选择器组件
+client/src/lib/promptTemplates.ts      → Prompt 模板配置
 client/src/lib/exportTopic.ts          → 话题导出工具函数
 client/src/index.css                   → 赛博认知深色主题
 server/cortex.test.ts                  → Vitest 单元测试（18 个测试）
-server/v04.test.ts                     → V0.4 新增测试（15 个测试）
+server/v04.test.ts                     → V0.4 新增测试（17 个测试）
 server/auth.logout.test.ts             → 认证测试（1 个测试）
 ```
 
@@ -213,14 +214,14 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | `extraction.extractDocument` | mutation | 批量 LLM 话题提取 |
 | `topic.list` | query | 获取话题列表（支持 projectId 过滤） |
 | `topic.get` | query | 获取话题详情（含关联 chunks + summary） |
-| `summary.generate` | mutation | LLM 生成话题摘要（**V0.4**：支持 customPrompt） |
+| `summary.generate` | mutation | LLM 生成话题摘要（支持 customPrompt） |
 | `summary.save` | mutation | 保存手动编辑的总结 |
-| `explore.search` | mutation | 话题探索：关键词检索 + LLM 整理（**V0.4**：支持 customPrompt，优先 merged_chunks） |
+| `explore.search` | mutation | 话题探索：关键词检索 + LLM 整理（支持 customPrompt） |
 | `explore.saveAsTopic` | mutation | 将探索结果保存为 Topic |
-| `mergedChunk.byDocument` | query | 获取文档的合并分段（V0.4） |
-| `mergedChunk.byProject` | query | 获取项目的所有合并分段（V0.4） |
-| `mergedChunk.hasMerged` | query | 检查文档是否已有合并数据（V0.4） |
-| `mergedChunk.merge` | mutation | 触发/重新触发文档的 LLM 语义合并（V0.4） |
+| `mergedChunk.byTopic` | query | 获取话题的合并分段（V0.4.2） |
+| `mergedChunk.byProject` | query | 获取项目的所有合并分段（按话题分组，V0.4.2） |
+| `mergedChunk.hasMerged` | query | 检查话题是否已有合并数据（V0.4.2） |
+| `mergedChunk.mergeByTopic` | mutation | 按话题触发 LLM 语义合并（V0.4.2） |
 
 ---
 
@@ -247,6 +248,7 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | V0.3 | 2026-02-27 | 修复中文文件名乱码、新增话题探索功能、独立用户名密码认证系统 |
 | V0.3.1 | 2026-02-27 | 新增话题导出功能：导出 Markdown / PDF（含标题、总结、原文引用） |
 | V0.4 | 2026-02-27 | 自定义 Prompt 模板、Chunk 合并优化、用户管理全局化、改密码、Admin 增强 |
+| V0.4.2 | 2026-02-27 | Chunk 合并改为按话题维度、修复 Prompt 模板选择器点击 bug |
 
 ---
 
@@ -256,9 +258,8 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 2. **批量操作**：批量重新提取话题、批量生成摘要
 3. **可视化**：话题关系图谱、文档覆盖热力图
 4. **项目删除与文档管理**：删除项目、删除文档、文档在项目间移动
-5. **Chunk 合并策略优化**：支持自定义合并粒度、合并策略
-6. **多格式支持**：支持 TXT、DOCX 等格式的文档上传
-7. **协作功能**：多用户共享项目、评论和标注
+5. **多格式支持**：支持 TXT、DOCX 等格式的文档上传
+6. **协作功能**：多用户共享项目、评论和标注
 
 ---
 
@@ -296,5 +297,6 @@ pnpm start
 8. 默认 admin 用户：username `litch`，初始密码 `cortex2026`
 9. 项目区的路由结构为 `/project/:projectId/:tab`，所有数据查询支持 projectId 过滤
 10. V0.4 新增的 Prompt 模板是纯前端功能，配置在 `client/src/lib/promptTemplates.ts`
-11. V0.4 的 Chunk 合并在上传后自动执行，也可手动触发（`mergedChunk.merge`）
-12. 金瓶梅的原始 chunks 数据已保留，merged_chunks 是独立的新增层
+11. **V0.4.2 的 Chunk 合并是按话题维度的**：在话题详情页触发 `mergedChunk.mergeByTopic`
+12. merged_chunks 表通过 `topicId` 关联话题（不再通过 documentId）
+13. 金瓶梅的原始 chunks 数据已保留，merged_chunks 是独立的新增层

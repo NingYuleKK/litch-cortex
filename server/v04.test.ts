@@ -35,12 +35,12 @@ function createCortexAuthContext(): TrpcContext {
 // ─── V0.4 Router Structure Tests ──────────────────────────────────
 
 describe("V0.4 appRouter structure", () => {
-  it("should have mergedChunk procedures", () => {
+  it("should have mergedChunk procedures (per-topic)", () => {
     const procedures = Object.keys((appRouter as any)._def.procedures);
-    expect(procedures).toContain("mergedChunk.byDocument");
+    expect(procedures).toContain("mergedChunk.byTopic");
     expect(procedures).toContain("mergedChunk.byProject");
     expect(procedures).toContain("mergedChunk.hasMerged");
-    expect(procedures).toContain("mergedChunk.merge");
+    expect(procedures).toContain("mergedChunk.mergeByTopic");
   });
 
   it("should have explore.search with customPrompt support", () => {
@@ -58,11 +58,11 @@ describe("V0.4 appRouter structure", () => {
 // ─── V0.4 Auth Protection Tests ───────────────────────────────────
 
 describe("V0.4 auth protection for merged chunks", () => {
-  it("should reject mergedChunk.byDocument for unauthenticated users", async () => {
+  it("should reject mergedChunk.byTopic for unauthenticated users", async () => {
     const ctx = createUnauthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
-      caller.mergedChunk.byDocument({ documentId: 1 })
+      caller.mergedChunk.byTopic({ topicId: 1 })
     ).rejects.toThrow();
   });
 
@@ -78,15 +78,15 @@ describe("V0.4 auth protection for merged chunks", () => {
     const ctx = createUnauthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
-      caller.mergedChunk.hasMerged({ documentId: 1 })
+      caller.mergedChunk.hasMerged({ topicId: 1 })
     ).rejects.toThrow();
   });
 
-  it("should reject mergedChunk.merge for unauthenticated users", async () => {
+  it("should reject mergedChunk.mergeByTopic for unauthenticated users", async () => {
     const ctx = createUnauthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
-      caller.mergedChunk.merge({ documentId: 1 })
+      caller.mergedChunk.mergeByTopic({ topicId: 1, projectId: 1 })
     ).rejects.toThrow();
   });
 });
@@ -121,13 +121,27 @@ describe("V0.4 input validation", () => {
     ).rejects.toThrow();
   });
 
-  it("mergedChunk.merge should validate documentId is a number", async () => {
+  it("mergedChunk.mergeByTopic should validate topicId is a number", async () => {
     const ctx = createCortexAuthContext();
     const caller = appRouter.createCaller(ctx);
     await expect(
       // @ts-expect-error - testing invalid input
-      caller.mergedChunk.merge({ documentId: "abc" })
+      caller.mergedChunk.mergeByTopic({ topicId: "abc", projectId: 1 })
     ).rejects.toThrow();
+  });
+
+  it("mergedChunk.byTopic should return empty for non-existent topic", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.mergedChunk.byTopic({ topicId: 99999 });
+    expect(result).toEqual([]);
+  });
+
+  it("mergedChunk.hasMerged should return false for non-existent topic", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.mergedChunk.hasMerged({ topicId: 99999 });
+    expect(result).toBe(false);
   });
 });
 
@@ -135,7 +149,6 @@ describe("V0.4 input validation", () => {
 
 describe("Prompt template configuration", () => {
   it("should have expected template IDs", async () => {
-    // Import the client-side prompt template module
     const { PRESET_TEMPLATES: PROMPT_TEMPLATES } = await import("../client/src/lib/promptTemplates");
     const ids = PROMPT_TEMPLATES.map(t => t.id);
     expect(ids).toContain("academic");
@@ -151,7 +164,6 @@ describe("Prompt template configuration", () => {
       expect(t.id).toBeTruthy();
       expect(t.label).toBeTruthy();
       expect(t.description).toBeTruthy();
-      // All except 'custom' should have a systemPrompt
       if (t.id !== "custom") {
         expect(t.systemPrompt).toBeTruthy();
       }

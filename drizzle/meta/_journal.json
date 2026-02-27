@@ -50,6 +50,13 @@
       "when": 1772192330405,
       "tag": "0006_bumpy_wolfpack",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1772194030974,
+      "tag": "0007_kind_blindfold",
+      "breakpoints": true
     }
   ]
 }

@@ -411,7 +411,7 @@ export async function upsertSummary(topicId: number, summaryText: string) {
   return result[0].insertId;
 }
 
-// ─── Merged Chunk Helpers ──────────────────────────────────────────
+// ─── Merged Chunk Helpers (per-topic) ────────────────────────────────────────
 
 export async function insertMergedChunks(data: InsertMergedChunk[]) {
   const db = await getDb();
@@ -420,10 +420,10 @@ export async function insertMergedChunks(data: InsertMergedChunk[]) {
   await db.insert(mergedChunks).values(data);
 }
 
-export async function getMergedChunksByDocument(documentId: number) {
+export async function getMergedChunksByTopic(topicId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(mergedChunks).where(eq(mergedChunks.documentId, documentId)).orderBy(asc(mergedChunks.position));
+  return db.select().from(mergedChunks).where(eq(mergedChunks.topicId, topicId)).orderBy(asc(mergedChunks.position));
 }
 
 export async function getMergedChunksByProject(projectId: number) {
@@ -432,55 +432,31 @@ export async function getMergedChunksByProject(projectId: number) {
   return db
     .select({
       id: mergedChunks.id,
-      documentId: mergedChunks.documentId,
+      topicId: mergedChunks.topicId,
       projectId: mergedChunks.projectId,
       content: mergedChunks.content,
       sourceChunkIds: mergedChunks.sourceChunkIds,
       position: mergedChunks.position,
       createdAt: mergedChunks.createdAt,
-      filename: documents.filename,
+      topicLabel: topics.label,
     })
     .from(mergedChunks)
-    .innerJoin(documents, eq(mergedChunks.documentId, documents.id))
+    .innerJoin(topics, eq(mergedChunks.topicId, topics.id))
     .where(eq(mergedChunks.projectId, projectId))
-    .orderBy(asc(mergedChunks.documentId), asc(mergedChunks.position));
+    .orderBy(asc(mergedChunks.topicId), asc(mergedChunks.position));
 }
 
-export async function deleteMergedChunksByDocument(documentId: number) {
+export async function deleteMergedChunksByTopic(topicId: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.delete(mergedChunks).where(eq(mergedChunks.documentId, documentId));
+  await db.delete(mergedChunks).where(eq(mergedChunks.topicId, topicId));
 }
 
-export async function searchMergedChunksByKeyword(projectId: number, keyword: string, limit = 30) {
-  const db = await getDb();
-  if (!db) return [];
 
-  const terms = keyword.trim().split(/\s+/).filter(t => t.length > 0);
-  if (terms.length === 0) return [];
 
-  const conditions = terms.map(term => like(mergedChunks.content, `%${term}%`));
-
-  return db
-    .select({
-      id: mergedChunks.id,
-      documentId: mergedChunks.documentId,
-      content: mergedChunks.content,
-      position: mergedChunks.position,
-      sourceChunkIds: mergedChunks.sourceChunkIds,
-      createdAt: mergedChunks.createdAt,
-      filename: documents.filename,
-    })
-    .from(mergedChunks)
-    .innerJoin(documents, eq(mergedChunks.documentId, documents.id))
-    .where(and(eq(mergedChunks.projectId, projectId), or(...conditions)))
-    .orderBy(desc(mergedChunks.createdAt))
-    .limit(limit);
-}
-
-export async function hasMergedChunks(documentId: number): Promise<boolean> {
+export async function hasMergedChunksForTopic(topicId: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
-  const result = await db.select({ id: mergedChunks.id }).from(mergedChunks).where(eq(mergedChunks.documentId, documentId)).limit(1);
+  const result = await db.select({ id: mergedChunks.id }).from(mergedChunks).where(eq(mergedChunks.topicId, topicId)).limit(1);
   return result.length > 0;
 }

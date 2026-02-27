@@ -13,11 +13,7 @@ import { getCortexUser } from "./authRoute";
 import {
   createDocument, updateDocument,
   insertChunks,
-  getChunksByDocument,
-  insertMergedChunks,
-  deleteMergedChunksByDocument,
 } from "./db";
-import { invokeLLM } from "./_core/llm";
 
 // ─── PDF parsing helper ─────────────────────────────────────────────
 async function parsePdfBuffer(buffer: Buffer): Promise<string> {
@@ -76,102 +72,6 @@ function chunkText(text: string, minSize = 500, maxSize = 800): string[] {
 // Export for testing
 export { chunkText, parsePdfBuffer };
 
-// ─── Auto merge chunks after upload ─────────────────────────────────
-async function autoMergeChunks(documentId: number, projectId: number | null) {
-  console.log(`[Merge] Starting auto-merge for document ${documentId}`);
-  const docChunks = await getChunksByDocument(documentId);
-  if (docChunks.length === 0) return;
-
-  // Delete any existing merged chunks
-  await deleteMergedChunksByDocument(documentId);
-
-  const BATCH_MIN = 5;
-  const BATCH_MAX = 8;
-  const mergedResults: Array<{ content: string; sourceChunkIds: number[] }> = [];
-
-  let i = 0;
-  while (i < docChunks.length) {
-    const remaining = docChunks.length - i;
-    let batchSize = Math.min(BATCH_MAX, remaining);
-    if (remaining > BATCH_MAX && remaining < BATCH_MIN + BATCH_MIN) {
-      batchSize = Math.ceil(remaining / 2);
-    }
-    const batch = docChunks.slice(i, i + batchSize);
-    i += batchSize;
-
-    const batchText = batch.map((c, idx) => `[\u7247\u6bb5 ${idx + 1} (ID: ${c.id})]\n${c.content}`).join("\n\n---\n\n");
-
-    try {
-      const response = await invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content: `\u4f60\u662f\u4e00\u4e2a\u6587\u672c\u5408\u5e76\u52a9\u624b\u3002\u4ee5\u4e0b\u662f\u4e00\u7ec4\u6309\u987a\u5e8f\u6392\u5217\u7684\u6587\u672c\u7247\u6bb5\u3002\u8bf7\u5206\u6790\u5b83\u4eec\u7684\u8bed\u4e49\u76f8\u5173\u6027\uff0c\u5c06\u5c5e\u4e8e\u540c\u4e00\u8bdd\u9898\u7684\u76f8\u90bb\u7247\u6bb5\u5408\u5e76\u6210\u66f4\u5927\u7684\u6bb5\u843d\u3002\n\n\u89c4\u5219\uff1a\n- \u53ea\u5408\u5e76\u76f8\u90bb\u7684\u3001\u8bed\u4e49\u76f8\u5173\u7684\u7247\u6bb5\n- \u5982\u679c\u67d0\u4e2a\u7247\u6bb5\u4e0e\u524d\u540e\u7247\u6bb5\u8bdd\u9898\u4e0d\u540c\uff0c\u5b83\u5e94\u8be5\u5355\u72ec\u6210\u4e3a\u4e00\u4e2a\u5408\u5e76\u5757\n- \u5408\u5e76\u65f6\u4fdd\u7559\u539f\u6587\u5185\u5bb9\uff0c\u4e0d\u8981\u6539\u5199\u6216\u7f29\u5199\n- \u5408\u5e76\u540e\u7684\u6bb5\u843d\u4e4b\u95f4\u7528\u4e24\u4e2a\u6362\u884c\u7b26\u5206\u9694\n\n\u8fd4\u56de JSON \u683c\u5f0f\uff1a\n{"groups": [{"chunk_ids": [1, 2, 3], "merged_content": "\u5408\u5e76\u540e\u7684\u5185\u5bb9..."}]}`,
-          },
-          { role: "user", content: batchText },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "chunk_merge",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                groups: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      chunk_ids: { type: "array", items: { type: "number" } },
-                      merged_content: { type: "string" },
-                    },
-                    required: ["chunk_ids", "merged_content"],
-                    additionalProperties: false,
-                  },
-                },
-              },
-              required: ["groups"],
-              additionalProperties: false,
-            },
-          },
-        },
-      });
-
-      const content = response.choices[0]?.message?.content;
-      if (content && typeof content === "string") {
-        const parsed = JSON.parse(content);
-        for (const group of parsed.groups) {
-          mergedResults.push({
-            content: group.merged_content,
-            sourceChunkIds: group.chunk_ids,
-          });
-        }
-      } else {
-        mergedResults.push({
-          content: batch.map(c => c.content).join("\n\n"),
-          sourceChunkIds: batch.map(c => c.id),
-        });
-      }
-    } catch {
-      mergedResults.push({
-        content: batch.map(c => c.content).join("\n\n"),
-        sourceChunkIds: batch.map(c => c.id),
-      });
-    }
-  }
-
-  const mergedData = mergedResults.map((m, idx) => ({
-    documentId,
-    projectId,
-    content: m.content,
-    sourceChunkIds: JSON.stringify(m.sourceChunkIds),
-    position: idx,
-  }));
-
-  await insertMergedChunks(mergedData);
-  console.log(`[Merge] Auto-merge complete for doc ${documentId}: ${docChunks.length} chunks -> ${mergedResults.length} merged`);
-}
 
 /**
  * Fix Chinese filename encoding in multipart/form-data.
@@ -324,11 +224,6 @@ uploadRouter.post(
         });
 
         console.log(`[Upload] "${filename}" parsed: ${textChunks.length} chunks`);
-
-        // 9. Auto-trigger chunk merging in background
-        autoMergeChunks(docId, projectId).catch(err => {
-          console.error(`[Upload] Auto-merge failed for doc ${docId}:`, err.message);
-        });
 
         res.json({
           id: docId,

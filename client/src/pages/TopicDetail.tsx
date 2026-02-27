@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags, Download, FileDown } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags, Download, FileDown, Merge, RefreshCw } from "lucide-react";
 import { useState, useEffect } from "react";
 import PromptTemplateSelector from "@/components/PromptTemplateSelector";
 import { getSelectedTemplateId, getEffectivePrompt } from "@/lib/promptTemplates";
@@ -26,6 +27,27 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
   const [summaryText, setSummaryText] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState(() => getSelectedTemplateId());
+  const [chunkTab, setChunkTab] = useState<"original" | "merged">("original");
+
+  // Merged chunks query
+  const { data: mergedChunks, isLoading: mergedLoading, refetch: refetchMerged } = trpc.mergedChunk.byTopic.useQuery(
+    { topicId },
+    { enabled: topicId > 0 }
+  );
+
+  const { data: hasMerged } = trpc.mergedChunk.hasMerged.useQuery(
+    { topicId },
+    { enabled: topicId > 0 }
+  );
+
+  const mergeMutation = trpc.mergedChunk.mergeByTopic.useMutation({
+    onSuccess: (result) => {
+      toast.success(`合并完成：${result.originalCount} 个片段 → ${result.mergedCount} 个合并块`);
+      refetchMerged();
+      setChunkTab("merged");
+    },
+    onError: (err: any) => toast.error(`合并失败: ${err.message}`),
+  });
 
   const saveMutation = trpc.summary.save.useMutation({
     onSuccess: () => {
@@ -33,7 +55,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
       setIsEditing(false);
       refetch();
     },
-    onError: (err) => toast.error(`保存失败: ${err.message}`),
+    onError: (err: any) => toast.error(`保存失败: ${err.message}`),
   });
 
   const generateMutation = trpc.summary.generate.useMutation({
@@ -42,7 +64,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
       toast.success("摘要生成完成");
       refetch();
     },
-    onError: (err) => toast.error(`生成失败: ${err.message}`),
+    onError: (err: any) => toast.error(`生成失败: ${err.message}`),
   });
 
   useEffect(() => {
@@ -148,43 +170,135 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
 
       {/* Two-column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" style={{ height: "calc(100vh - 180px)" }}>
-        {/* Left: Chunks */}
+        {/* Left: Chunks with tabs */}
         <Card className="bg-card border-border flex flex-col overflow-hidden">
           <CardHeader className="pb-2 shrink-0">
-            <CardTitle className="text-xs font-mono text-muted-foreground uppercase tracking-wider">
-              关联文本片段 [{data.chunks.length}]
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <Tabs value={chunkTab} onValueChange={(v) => setChunkTab(v as "original" | "merged")} className="w-full">
+                <div className="flex items-center justify-between">
+                  <TabsList className="h-7">
+                    <TabsTrigger value="original" className="text-xs h-6 px-3">
+                      原始片段 [{data.chunks.length}]
+                    </TabsTrigger>
+                    <TabsTrigger value="merged" className="text-xs h-6 px-3">
+                      合并片段 [{mergedChunks?.length ?? 0}]
+                    </TabsTrigger>
+                  </TabsList>
+                  <div className="flex items-center gap-1.5">
+                    {hasMerged ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+                        onClick={() => {
+                          if (projectId) mergeMutation.mutate({ topicId, projectId });
+                        }}
+                        disabled={mergeMutation.isPending || !projectId}
+                      >
+                        {mergeMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                        ) : (
+                          <RefreshCw className="h-3 w-3 mr-1" />
+                        )}
+                        重新合并
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/10"
+                        onClick={() => {
+                          if (projectId) mergeMutation.mutate({ topicId, projectId });
+                        }}
+                        disabled={mergeMutation.isPending || !projectId}
+                      >
+                        {mergeMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                        ) : (
+                          <Merge className="h-3 w-3 mr-1" />
+                        )}
+                        合并相关分段
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </Tabs>
+            </div>
           </CardHeader>
           <CardContent className="p-0 flex-1 overflow-hidden">
-            <ScrollArea className="h-full">
-              <div className="divide-y divide-border">
-                {data.chunks.map((chunk, idx) => (
-                  <div key={chunk.id} className="px-4 py-3 hover:bg-secondary/30 transition-colors">
-                    <div className="flex items-start gap-3">
-                      <div className="shrink-0 w-8 text-right">
-                        <span className="text-xs font-mono text-muted-foreground">
-                          #{String(idx + 1).padStart(2, "0")}
-                        </span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1 flex-wrap">
-                          <Badge variant="outline" className="text-xs font-mono border-primary/30 text-primary h-5">
-                            <FileText className="h-2.5 w-2.5 mr-1" />
-                            {chunk.filename}
-                          </Badge>
+            {chunkTab === "original" ? (
+              <ScrollArea className="h-full">
+                <div className="divide-y divide-border">
+                  {data.chunks.map((chunk, idx) => (
+                    <div key={chunk.id} className="px-4 py-3 hover:bg-secondary/30 transition-colors">
+                      <div className="flex items-start gap-3">
+                        <div className="shrink-0 w-8 text-right">
                           <span className="text-xs font-mono text-muted-foreground">
-                            rel:{(chunk.relevanceScore ?? 1).toFixed(1)}
+                            #{String(idx + 1).padStart(2, "0")}
                           </span>
                         </div>
-                        <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
-                          {chunk.content}
-                        </p>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <Badge variant="outline" className="text-xs font-mono border-primary/30 text-primary h-5">
+                              <FileText className="h-2.5 w-2.5 mr-1" />
+                              {chunk.filename}
+                            </Badge>
+                            <span className="text-xs font-mono text-muted-foreground">
+                              rel:{(chunk.relevanceScore ?? 1).toFixed(1)}
+                            </span>
+                          </div>
+                          <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                            {chunk.content}
+                          </p>
+                        </div>
                       </div>
                     </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            ) : (
+              <ScrollArea className="h-full">
+                {mergedLoading ? (
+                  <div className="flex items-center justify-center py-20">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
                   </div>
-                ))}
-              </div>
-            </ScrollArea>
+                ) : mergedChunks && mergedChunks.length > 0 ? (
+                  <div className="divide-y divide-border">
+                    {mergedChunks.map((mc, idx) => (
+                      <div key={mc.id} className="px-4 py-3 hover:bg-secondary/30 transition-colors">
+                        <div className="flex items-start gap-3">
+                          <div className="shrink-0 w-8 text-right">
+                            <span className="text-xs font-mono text-amber-400">
+                              M{String(idx + 1).padStart(2, "0")}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <Badge variant="outline" className="text-xs font-mono border-amber-500/30 text-amber-400 h-5">
+                                <Merge className="h-2.5 w-2.5 mr-1" />
+                                合并块
+                              </Badge>
+                              <span className="text-xs font-mono text-muted-foreground">
+                                含 {JSON.parse(mc.sourceChunkIds || "[]").length} 个原始片段
+                              </span>
+                            </div>
+                            <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                              {mc.content}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+                    <Merge className="h-8 w-8 mb-3 opacity-30" />
+                    <p className="text-sm">暂无合并分段</p>
+                    <p className="text-xs mt-1">点击「合并相关分段」按钮进行 LLM 语义合并</p>
+                  </div>
+                )}
+              </ScrollArea>
+            )}
           </CardContent>
         </Card>
 

@@ -124,12 +124,12 @@ export type Summary = typeof summaries.$inferSelect;
 export type InsertSummary = typeof summaries.$inferInsert;
 
 /**
- * Merged chunks - LLM-merged groups of adjacent semantically related chunks.
+ * Merged chunks - LLM-merged groups of semantically related chunks per topic.
  * Original chunks are preserved; this is an overlay layer.
  */
 export const mergedChunks = mysqlTable("merged_chunks", {
   id: int("id").autoincrement().primaryKey(),
-  documentId: int("documentId").notNull(),
+  topicId: int("topicId").notNull(),
   projectId: int("projectId"),
   content: mediumtext("content").notNull(),
   sourceChunkIds: text("sourceChunkIds").notNull(), // JSON array of chunk IDs

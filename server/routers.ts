@@ -10,8 +10,8 @@ import {
   linkChunkToTopic, getSummaryByTopic, upsertSummary,
   createProject, getProjectsByUser, getProjectsByCortexUser, getProjectById, updateProject,
   searchChunksByKeyword,
-  insertMergedChunks, getMergedChunksByDocument, getMergedChunksByProject,
-  deleteMergedChunksByDocument, searchMergedChunksByKeyword, hasMergedChunks,
+  insertMergedChunks, getMergedChunksByTopic, getMergedChunksByProject,
+  deleteMergedChunksByTopic, hasMergedChunksForTopic,
 } from "./db";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
@@ -448,10 +448,8 @@ export const appRouter = router({
         customPrompt: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
-        // 1. Try merged chunks first, fallback to original chunks
-        const mergedMatches = await searchMergedChunksByKeyword(input.projectId, input.query);
-        const useMerged = mergedMatches.length > 0;
-        const matchedChunks = useMerged ? mergedMatches : await searchChunksByKeyword(input.projectId, input.query);
+        // Search original chunks by keyword
+        const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
 
         if (matchedChunks.length === 0) {
           return {
@@ -556,41 +554,42 @@ export const appRouter = router({
       }),
   }),
 
-  // ─── Merged Chunk Management ──────────────────────────────────────
+  // ─── Merged Chunk Management (per-topic) ─────────────────────────────
   mergedChunk: router({
-    // Get merged chunks for a document
-    byDocument: protectedProcedure
-      .input(z.object({ documentId: z.number() }))
+    // Get merged chunks for a topic
+    byTopic: protectedProcedure
+      .input(z.object({ topicId: z.number() }))
       .query(async ({ input }) => {
-        return getMergedChunksByDocument(input.documentId);
+        return getMergedChunksByTopic(input.topicId);
       }),
 
-    // Get all merged chunks for a project
+    // Get all merged chunks for a project (grouped by topic)
     byProject: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .query(async ({ input }) => {
         return getMergedChunksByProject(input.projectId);
       }),
 
-    // Check if a document has merged chunks
+    // Check if a topic has merged chunks
     hasMerged: protectedProcedure
-      .input(z.object({ documentId: z.number() }))
+      .input(z.object({ topicId: z.number() }))
       .query(async ({ input }) => {
-        return hasMergedChunks(input.documentId);
+        return hasMergedChunksForTopic(input.topicId);
       }),
 
-    // Merge chunks for a document (LLM-based semantic merging)
-    merge: protectedProcedure
-      .input(z.object({ documentId: z.number() }))
+    // Merge chunks for a topic (LLM-based semantic merging)
+    mergeByTopic: protectedProcedure
+      .input(z.object({ topicId: z.number(), projectId: z.number() }))
       .mutation(async ({ input }) => {
-        const doc = await getDocumentById(input.documentId);
-        if (!doc) throw new Error("Document not found");
+        const topic = await getTopicById(input.topicId);
+        if (!topic) throw new Error("Topic not found");
 
-        const docChunks = await getChunksByDocument(input.documentId);
-        if (docChunks.length === 0) throw new Error("No chunks found for document");
+        // Get all chunks associated with this topic in this project
+        const topicChunks = await getChunksByTopicAndProject(input.topicId, input.projectId);
+        if (topicChunks.length === 0) throw new Error("No chunks found for this topic");
 
-        // Delete existing merged chunks for this document
-        await deleteMergedChunksByDocument(input.documentId);
+        // Delete existing merged chunks for this topic
+        await deleteMergedChunksByTopic(input.topicId);
 
         // Group chunks into batches of 5-8 for LLM merging
         const BATCH_MIN = 5;
@@ -598,30 +597,27 @@ export const appRouter = router({
         const mergedResults: Array<{ content: string; sourceChunkIds: number[] }> = [];
 
         let i = 0;
-        while (i < docChunks.length) {
-          const remaining = docChunks.length - i;
-          // Determine batch size: aim for 5-8, but handle remainder
+        while (i < topicChunks.length) {
+          const remaining = topicChunks.length - i;
           let batchSize = Math.min(BATCH_MAX, remaining);
           if (remaining > BATCH_MAX && remaining < BATCH_MIN + BATCH_MIN) {
-            // If remaining is between BATCH_MAX+1 and 2*BATCH_MIN-1, split evenly
             batchSize = Math.ceil(remaining / 2);
           }
-          const batch = docChunks.slice(i, i + batchSize);
+          const batch = topicChunks.slice(i, i + batchSize);
           i += batchSize;
 
-          // Prepare batch text for LLM
-          const batchText = batch.map((c, idx) => `[片段 ${idx + 1} (ID: ${c.id})]\n${c.content}`).join("\n\n---\n\n");
+          const batchText = batch.map((c: any, idx: number) => `[片段 ${idx + 1} (ID: ${c.id})]\n${c.content}`).join("\n\n---\n\n");
 
           try {
             const response = await invokeLLM({
               messages: [
                 {
                   role: "system",
-                  content: `你是一个文本合并助手。以下是一组按顺序排列的文本片段。请分析它们的语义相关性，将属于同一话题的相邻片段合并成更大的段落。
+                  content: `你是一个文本合并助手。以下是与话题「${topic.label}」相关的文本片段。请将语义相关的片段合并成更大的段落。
 
 规则：
-- 只合并相邻的、语义相关的片段
-- 如果某个片段与前后片段话题不同，它应该单独成为一个合并块
+- 将语义相关的片段合并，不必相邻
+- 如果某个片段与其他片段内容差异较大，它应该单独成为一个合并块
 - 合并时保留原文内容，不要改写或缩写
 - 合并后的段落之间用两个换行符分隔
 
@@ -668,25 +664,23 @@ export const appRouter = router({
                 });
               }
             } else {
-              // Fallback: treat entire batch as one merged chunk
               mergedResults.push({
-                content: batch.map(c => c.content).join("\n\n"),
-                sourceChunkIds: batch.map(c => c.id),
+                content: batch.map((c: any) => c.content).join("\n\n"),
+                sourceChunkIds: batch.map((c: any) => c.id),
               });
             }
           } catch (err) {
-            // Fallback on LLM error: treat batch as one merged chunk
             mergedResults.push({
-              content: batch.map(c => c.content).join("\n\n"),
-              sourceChunkIds: batch.map(c => c.id),
+              content: batch.map((c: any) => c.content).join("\n\n"),
+              sourceChunkIds: batch.map((c: any) => c.id),
             });
           }
         }
 
         // Insert merged chunks into database
         const mergedData = mergedResults.map((m, idx) => ({
-          documentId: input.documentId,
-          projectId: doc.projectId ?? null,
+          topicId: input.topicId,
+          projectId: input.projectId,
           content: m.content,
           sourceChunkIds: JSON.stringify(m.sourceChunkIds),
           position: idx,
@@ -696,7 +690,7 @@ export const appRouter = router({
 
         return {
           mergedCount: mergedResults.length,
-          originalCount: docChunks.length,
+          originalCount: topicChunks.length,
         };
       }),
   }),
