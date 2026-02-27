@@ -27,6 +27,7 @@ export const cortexUsers = mysqlTable("cortex_users", {
   passwordHash: varchar("passwordHash", { length: 256 }).notNull(),
   displayName: varchar("displayName", { length: 128 }),
   role: mysqlEnum("role", ["admin", "member"]).default("member").notNull(),
+  initialPassword: varchar("initialPassword", { length: 256 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn"),
 });
@@ -121,3 +122,20 @@ export const summaries = mysqlTable("summaries", {
 
 export type Summary = typeof summaries.$inferSelect;
 export type InsertSummary = typeof summaries.$inferInsert;
+
+/**
+ * Merged chunks - LLM-merged groups of adjacent semantically related chunks.
+ * Original chunks are preserved; this is an overlay layer.
+ */
+export const mergedChunks = mysqlTable("merged_chunks", {
+  id: int("id").autoincrement().primaryKey(),
+  documentId: int("documentId").notNull(),
+  projectId: int("projectId"),
+  content: mediumtext("content").notNull(),
+  sourceChunkIds: text("sourceChunkIds").notNull(), // JSON array of chunk IDs
+  position: int("position").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type MergedChunk = typeof mergedChunks.$inferSelect;
+export type InsertMergedChunk = typeof mergedChunks.$inferInsert;

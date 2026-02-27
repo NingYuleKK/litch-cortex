@@ -13,10 +13,19 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Brain, Plus, FolderOpen, FileText, Loader2, LogOut, Shield } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Brain, Plus, FolderOpen, FileText, Loader2, LogOut, Shield, KeyRound, Users, Settings } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
+import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 
 export default function ProjectList() {
   const { user, loading, logout } = useCortexAuth();
@@ -24,6 +33,7 @@ export default function ProjectList() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // Use authenticated project listing (context.ts handles cortex auth automatically)
   const { data: projects, isLoading, refetch } = trpc.project.list.useQuery(
@@ -70,14 +80,66 @@ export default function ProjectList() {
               CORTEX
             </span>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-              {user.displayName || user.username}
-              {user.role === "admin" && <Shield className="w-3.5 h-3.5 text-cyan-400" />}
-            </span>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleLogout}>
-              <LogOut className="h-4 w-4" />
-            </Button>
+          <div className="flex items-center gap-2">
+            {/* Admin: User Management Button */}
+            {user.role === "admin" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 text-muted-foreground hover:text-foreground gap-1.5"
+                onClick={() => setLocation("/admin/users")}
+              >
+                <Users className="h-4 w-4" />
+                <span className="hidden sm:inline text-xs">用户管理</span>
+              </Button>
+            )}
+
+            {/* User Menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-accent/50 transition-colors focus:outline-none">
+                  <Avatar className="h-7 w-7 border">
+                    <AvatarFallback className="text-xs font-medium bg-cyan-500/20 text-cyan-400">
+                      {(user.displayName || user.username || "?").charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm text-muted-foreground hidden sm:flex items-center gap-1.5">
+                    {user.displayName || user.username}
+                    {user.role === "admin" && <Shield className="w-3.5 h-3.5 text-cyan-400" />}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  @{user.username} · {user.role === "admin" ? "管理员" : "成员"}
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setShowChangePassword(true)}
+                  className="cursor-pointer"
+                >
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  <span>修改密码</span>
+                </DropdownMenuItem>
+                {user.role === "admin" && (
+                  <DropdownMenuItem
+                    onClick={() => setLocation("/admin/users")}
+                    className="cursor-pointer"
+                  >
+                    <Users className="mr-2 h-4 w-4" />
+                    <span>用户管理</span>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={handleLogout}
+                  className="cursor-pointer text-destructive focus:text-destructive"
+                >
+                  <LogOut className="mr-2 h-4 w-4" />
+                  <span>退出登录</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
@@ -199,6 +261,9 @@ export default function ProjectList() {
           </div>
         )}
       </main>
+
+      {/* Change Password Dialog */}
+      <ChangePasswordDialog open={showChangePassword} onOpenChange={setShowChangePassword} />
     </div>
   );
 }

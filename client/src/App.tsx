@@ -8,6 +8,7 @@ import { CortexAuthProvider, useCortexAuth } from "./hooks/useCortexAuth";
 import Login from "./pages/Login";
 import ProjectList from "./pages/ProjectList";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
+import UserManagement from "./pages/UserManagement";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useCortexAuth();
@@ -47,6 +48,11 @@ function Router() {
       <Route path="/project/:projectId/topics/:topicId">
         <AuthGuard>
           <ProjectWorkspace />
+        </AuthGuard>
+      </Route>
+      <Route path="/admin/users">
+        <AuthGuard>
+          <UserManagement />
         </AuthGuard>
       </Route>
       <Route path="/404" component={NotFound} />

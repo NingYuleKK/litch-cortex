@@ -82,3 +82,44 @@
 - [x] 文件名格式：topic-{话题名}-{日期}.md / .pdf
 - [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
 - [x] 保存 checkpoint
+
+## V0.4 迭代
+
+### 功能一：自定义 Prompt 模板
+- [x] 创建 Prompt 模板配置（学术总结/Blog风格/读书笔记/对话摘要/自定义）
+- [x] 话题探索页：搜索框旁增加 Prompt 模板选择器
+- [x] 话题详情页：生成摘要按钮旁增加 Prompt 模板选择器
+- [x] 后端 API 支持接收自定义 prompt 参数
+- [x] 自定义 prompt 用 localStorage 缓存
+
+### 功能二：Chunk 合并优化
+- [x] 新增 merged_chunks 表（id, document_id, project_id, content, source_chunk_ids, created_at）
+- [x] 后端：文档上传解析后自动触发 LLM 合并（每 5-8 个 chunks 为一组判断语义相关性）
+- [x] 后端：合并 API（支持已有文档的“重新合并”）
+- [x] 话题提取改为基于 merged_chunks
+- [x] 分段预览页增加切换：原始分段 / 合并分段
+- [x] 话题探索搜索基于 merged_chunks
+- [x] 已有文档提供“重新合并”按钮
+
+### 通用
+- [x] 更新 Vitest 测试
+- [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+- [x] 保存 checkpoint
+
+### 功能三：用户管理入口全局化
+- [x] 用户管理从项目工作区侧边栏移除
+- [x] 在项目列表首页顶部导航栏添加用户管理入口（齿轮图标）
+- [x] 创建独立的用户管理页面路由（/admin/users）
+- [x] 非 admin 用户不显示管理入口
+
+### 功能四：个人修改密码
+- [x] 后端：修改密码 API（验证旧密码 + 设置新密码）
+- [x] 前端：用户菜单增加“修改密码”入口
+- [x] 前端：修改密码对话框（旧密码 + 新密码 + 确认新密码）
+
+### 功能五：Admin 用户管理增强
+- [x] Schema: cortex_users 表新增 initial_password 字段
+- [x] 后端：创建用户时保存初始密码明文到 initial_password
+- [x] 后端：删除用户 API（级联删除用户的所有项目和数据）
+- [x] 前端：用户列表显示初始密码列
+- [x] 前端：用户列表增加删除按钮（带确认对话框）

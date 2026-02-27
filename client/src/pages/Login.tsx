@@ -116,7 +116,7 @@ export default function Login() {
         </form>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          Cortex V0.3 · 独立认证系统
+          Cortex V0.4 · 独立认证系统
         </p>
       </div>
     </div>

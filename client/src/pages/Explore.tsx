@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import { Search, Sparkles, Save, Loader2, FileText, ChevronDown, ChevronUp, Download, FileDown } from "lucide-react";
+import PromptTemplateSelector from "@/components/PromptTemplateSelector";
+import { getSelectedTemplateId, getEffectivePrompt } from "@/lib/promptTemplates";
 import { exportAsMarkdown, exportAsPdf } from "@/lib/exportTopic";
 
 interface ExploreResult {
@@ -23,6 +25,8 @@ export default function Explore({ projectId }: { projectId: number }) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<ExploreResult | null>(null);
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
+
+  const [selectedTemplateId, setSelectedTemplateId] = useState(() => getSelectedTemplateId());
 
   const searchMutation = trpc.explore.search.useMutation({
     onSuccess: (data) => {
@@ -46,7 +50,8 @@ export default function Explore({ projectId }: { projectId: number }) {
     e.preventDefault();
     if (!query.trim()) return;
     setResult(null);
-    searchMutation.mutate({ projectId, query: query.trim() });
+    const customPrompt = selectedTemplateId !== "academic" ? getEffectivePrompt(selectedTemplateId) : undefined;
+    searchMutation.mutate({ projectId, query: query.trim(), customPrompt });
   }
 
   function handleSave() {
@@ -104,33 +109,42 @@ export default function Explore({ projectId }: { projectId: number }) {
       </p>
 
       {/* Search Form */}
-      <form onSubmit={handleSearch} className="flex gap-3">
-        <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="输入关键词或问题，如「西门庆的经济活动」「潘金莲的命运」..."
-            className="pl-10 bg-background border-border focus:border-cyan-500 focus:ring-cyan-500/20"
+      <form onSubmit={handleSearch} className="space-y-3">
+        <div className="flex items-center gap-2">
+          <PromptTemplateSelector
+            compact
+            onTemplateChange={(id) => setSelectedTemplateId(id)}
           />
+          <span className="text-xs text-muted-foreground">选择 Prompt 模板影响 LLM 输出风格</span>
         </div>
-        <Button
-          type="submit"
-          disabled={searchMutation.isPending || !query.trim()}
-          className="bg-cyan-600 hover:bg-cyan-500 text-white px-6"
-        >
-          {searchMutation.isPending ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              探索中...
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-4 h-4 mr-2" />
-              探索
-            </>
-          )}
-        </Button>
+        <div className="flex gap-3">
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="输入关键词或问题，如「西门庆的经济活动」「潘金莲的命运」..."
+              className="pl-10 bg-background border-border focus:border-cyan-500 focus:ring-cyan-500/20"
+            />
+          </div>
+          <Button
+            type="submit"
+            disabled={searchMutation.isPending || !query.trim()}
+            className="bg-cyan-600 hover:bg-cyan-500 text-white px-6"
+          >
+            {searchMutation.isPending ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                探索中...
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4 mr-2" />
+                探索
+              </>
+            )}
+          </Button>
+        </div>
       </form>
 
       {/* Results */}

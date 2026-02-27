@@ -6,6 +6,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags, Download, FileDown } from "lucide-react";
 import { useState, useEffect } from "react";
+import PromptTemplateSelector from "@/components/PromptTemplateSelector";
+import { getSelectedTemplateId, getEffectivePrompt } from "@/lib/promptTemplates";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
@@ -23,6 +25,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
 
   const [summaryText, setSummaryText] = useState("");
   const [isEditing, setIsEditing] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState(() => getSelectedTemplateId());
 
   const saveMutation = trpc.summary.save.useMutation({
     onSuccess: () => {
@@ -197,7 +200,10 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
                   variant="outline"
                   size="sm"
                   className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/10"
-                  onClick={() => generateMutation.mutate({ topicId, projectId })}
+                  onClick={() => {
+                    const customPrompt = selectedTemplateId !== "academic" ? getEffectivePrompt(selectedTemplateId) : undefined;
+                    generateMutation.mutate({ topicId, projectId, customPrompt });
+                  }}
                   disabled={generateMutation.isPending}
                 >
                   {generateMutation.isPending ? (
@@ -207,6 +213,10 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
                   )}
                   LLM 生成摘要
                 </Button>
+                <PromptTemplateSelector
+                  compact
+                  onTemplateChange={(id) => setSelectedTemplateId(id)}
+                />
               </div>
             </div>
           </CardHeader>

@@ -6,13 +6,15 @@
  * - POST /api/cortex-auth/register — admin creates new user
  * - GET  /api/cortex-auth/me — get current user from JWT
  * - POST /api/cortex-auth/logout — clear JWT cookie
+ * - PUT  /api/cortex-auth/change-password — change own password
+ * - DELETE /api/cortex-auth/users/:id — admin deletes user + cascade data
  */
 import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { getDb } from "./db";
-import { cortexUsers, CortexUser } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { cortexUsers, CortexUser, projects, documents, chunks, chunkTopics, summaries, topics } from "../drizzle/schema";
+import { eq, and, inArray, sql } from "drizzle-orm";
 
 const CORTEX_COOKIE = "cortex_session";
 const JWT_SECRET_KEY = process.env.JWT_SECRET || "cortex-default-secret-change-me";
@@ -72,6 +74,7 @@ export async function seedDefaultAdmin() {
     passwordHash: hash,
     displayName: "Litch",
     role: "admin",
+    initialPassword: "cortex2026",
   });
   console.log("[Auth] Created default admin user 'litch'");
 }
@@ -171,6 +174,7 @@ authRouter.post("/api/cortex-auth/register", async (req: Request, res: Response)
       passwordHash: hash,
       displayName: displayName || username,
       role: role === "admin" ? "admin" : "member",
+      initialPassword: password, // Store initial password in plaintext for admin reference
     });
 
     res.json({
@@ -211,6 +215,50 @@ authRouter.post("/api/cortex-auth/logout", async (req: Request, res: Response) =
   res.json({ success: true });
 });
 
+// Change password (any authenticated user)
+authRouter.put("/api/cortex-auth/change-password", async (req: Request, res: Response) => {
+  try {
+    const currentUser = await getCortexUser(req);
+    if (!currentUser) {
+      res.status(401).json({ error: "未登录" });
+      return;
+    }
+
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword) {
+      res.status(400).json({ error: "旧密码和新密码不能为空" });
+      return;
+    }
+
+    if (newPassword.length < 4) {
+      res.status(400).json({ error: "新密码长度不能少于 4 位" });
+      return;
+    }
+
+    // Verify old password
+    const valid = await bcrypt.compare(oldPassword, currentUser.passwordHash);
+    if (!valid) {
+      res.status(401).json({ error: "旧密码不正确" });
+      return;
+    }
+
+    const db = await getDb();
+    if (!db) {
+      res.status(500).json({ error: "数据库不可用" });
+      return;
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    // Update password hash only; do NOT update initialPassword
+    await db.update(cortexUsers).set({ passwordHash: newHash }).where(eq(cortexUsers.id, currentUser.id));
+
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error("[Auth] Change password error:", err.message);
+    res.status(500).json({ error: "修改密码失败" });
+  }
+});
+
 // List users (admin only)
 authRouter.get("/api/cortex-auth/users", async (req: Request, res: Response) => {
   try {
@@ -231,6 +279,7 @@ authRouter.get("/api/cortex-auth/users", async (req: Request, res: Response) => 
       username: cortexUsers.username,
       displayName: cortexUsers.displayName,
       role: cortexUsers.role,
+      initialPassword: cortexUsers.initialPassword,
       createdAt: cortexUsers.createdAt,
       lastSignedIn: cortexUsers.lastSignedIn,
     }).from(cortexUsers);
@@ -238,6 +287,82 @@ authRouter.get("/api/cortex-auth/users", async (req: Request, res: Response) => 
     res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: "获取用户列表失败" });
+  }
+});
+
+// Delete user (admin only, cascade delete all user data)
+authRouter.delete("/api/cortex-auth/users/:id", async (req: Request, res: Response) => {
+  try {
+    const currentUser = await getCortexUser(req);
+    if (!currentUser || currentUser.role !== "admin") {
+      res.status(403).json({ error: "只有管理员可以删除用户" });
+      return;
+    }
+
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) {
+      res.status(400).json({ error: "无效的用户 ID" });
+      return;
+    }
+
+    // Prevent deleting self
+    if (targetId === currentUser.id) {
+      res.status(400).json({ error: "不能删除自己的账号" });
+      return;
+    }
+
+    const db = await getDb();
+    if (!db) {
+      res.status(500).json({ error: "数据库不可用" });
+      return;
+    }
+
+    // Verify target user exists
+    const targetRows = await db.select().from(cortexUsers).where(eq(cortexUsers.id, targetId)).limit(1);
+    if (targetRows.length === 0) {
+      res.status(404).json({ error: "用户不存在" });
+      return;
+    }
+
+    // Cascade delete: get all projects owned by this user
+    const userProjects = await db.select({ id: projects.id }).from(projects).where(eq(projects.cortexUserId, targetId));
+    const projectIds = userProjects.map(p => p.id);
+
+    if (projectIds.length > 0) {
+      // Get all documents in these projects
+      const userDocs = await db.select({ id: documents.id }).from(documents).where(inArray(documents.projectId, projectIds));
+      const docIds = userDocs.map(d => d.id);
+
+      if (docIds.length > 0) {
+        // Get all chunks in these documents
+        const userChunks = await db.select({ id: chunks.id }).from(chunks).where(inArray(chunks.documentId, docIds));
+        const chunkIds = userChunks.map(c => c.id);
+
+        if (chunkIds.length > 0) {
+          // Delete chunk_topics for these chunks
+          await db.delete(chunkTopics).where(inArray(chunkTopics.chunkId, chunkIds));
+        }
+
+        // Delete chunks
+        await db.delete(chunks).where(inArray(chunks.documentId, docIds));
+      }
+
+      // Delete documents
+      await db.delete(documents).where(inArray(documents.projectId, projectIds));
+
+      // Delete projects
+      await db.delete(projects).where(eq(projects.cortexUserId, targetId));
+    }
+
+    // Delete the user
+    await db.delete(cortexUsers).where(eq(cortexUsers.id, targetId));
+
+    console.log(`[Auth] Admin ${currentUser.username} deleted user #${targetId} (${targetRows[0].username}) with ${projectIds.length} projects`);
+
+    res.json({ success: true, deletedProjects: projectIds.length });
+  } catch (err: any) {
+    console.error("[Auth] Delete user error:", err.message);
+    res.status(500).json({ error: "删除用户失败" });
   }
 });
 

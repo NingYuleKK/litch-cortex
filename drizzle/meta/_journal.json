@@ -36,6 +36,20 @@
       "when": 1772185371001,
       "tag": "0004_fair_groot",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1772191825912,
+      "tag": "0005_military_sheva_callister",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1772192330405,
+      "tag": "0006_bumpy_wolfpack",
+      "breakpoints": true
     }
   ]
 }

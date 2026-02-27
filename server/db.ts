@@ -9,6 +9,7 @@ import {
   topics, InsertTopic, Topic,
   chunkTopics, InsertChunkTopic,
   summaries, InsertSummary, Summary,
+  mergedChunks, InsertMergedChunk, MergedChunk,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -408,4 +409,78 @@ export async function upsertSummary(topicId: number, summaryText: string) {
   }
   const result = await db.insert(summaries).values({ topicId, summaryText });
   return result[0].insertId;
+}
+
+// ─── Merged Chunk Helpers ──────────────────────────────────────────
+
+export async function insertMergedChunks(data: InsertMergedChunk[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (data.length === 0) return;
+  await db.insert(mergedChunks).values(data);
+}
+
+export async function getMergedChunksByDocument(documentId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(mergedChunks).where(eq(mergedChunks.documentId, documentId)).orderBy(asc(mergedChunks.position));
+}
+
+export async function getMergedChunksByProject(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: mergedChunks.id,
+      documentId: mergedChunks.documentId,
+      projectId: mergedChunks.projectId,
+      content: mergedChunks.content,
+      sourceChunkIds: mergedChunks.sourceChunkIds,
+      position: mergedChunks.position,
+      createdAt: mergedChunks.createdAt,
+      filename: documents.filename,
+    })
+    .from(mergedChunks)
+    .innerJoin(documents, eq(mergedChunks.documentId, documents.id))
+    .where(eq(mergedChunks.projectId, projectId))
+    .orderBy(asc(mergedChunks.documentId), asc(mergedChunks.position));
+}
+
+export async function deleteMergedChunksByDocument(documentId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(mergedChunks).where(eq(mergedChunks.documentId, documentId));
+}
+
+export async function searchMergedChunksByKeyword(projectId: number, keyword: string, limit = 30) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const terms = keyword.trim().split(/\s+/).filter(t => t.length > 0);
+  if (terms.length === 0) return [];
+
+  const conditions = terms.map(term => like(mergedChunks.content, `%${term}%`));
+
+  return db
+    .select({
+      id: mergedChunks.id,
+      documentId: mergedChunks.documentId,
+      content: mergedChunks.content,
+      position: mergedChunks.position,
+      sourceChunkIds: mergedChunks.sourceChunkIds,
+      createdAt: mergedChunks.createdAt,
+      filename: documents.filename,
+    })
+    .from(mergedChunks)
+    .innerJoin(documents, eq(mergedChunks.documentId, documents.id))
+    .where(and(eq(mergedChunks.projectId, projectId), or(...conditions)))
+    .orderBy(desc(mergedChunks.createdAt))
+    .limit(limit);
+}
+
+export async function hasMergedChunks(documentId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db.select({ id: mergedChunks.id }).from(mergedChunks).where(eq(mergedChunks.documentId, documentId)).limit(1);
+  return result.length > 0;
 }

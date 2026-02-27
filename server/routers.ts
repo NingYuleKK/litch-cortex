@@ -10,6 +10,8 @@ import {
   linkChunkToTopic, getSummaryByTopic, upsertSummary,
   createProject, getProjectsByUser, getProjectsByCortexUser, getProjectById, updateProject,
   searchChunksByKeyword,
+  insertMergedChunks, getMergedChunksByDocument, getMergedChunksByProject,
+  deleteMergedChunksByDocument, searchMergedChunksByKeyword, hasMergedChunks,
 } from "./db";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
@@ -402,7 +404,7 @@ export const appRouter = router({
       }),
 
     generate: protectedProcedure
-      .input(z.object({ topicId: z.number(), projectId: z.number().optional() }))
+      .input(z.object({ topicId: z.number(), projectId: z.number().optional(), customPrompt: z.string().optional() }))
       .mutation(async ({ input }) => {
         const topic = await getTopicById(input.topicId);
         if (!topic) throw new Error("Topic not found");
@@ -414,17 +416,16 @@ export const appRouter = router({
 
         const chunksText = topicChunks.map((c, i) => `[片段 ${i + 1}]\n${c.content}`).join("\n\n---\n\n");
 
+        // Use custom prompt if provided, otherwise use default
+        const systemPrompt = input.customPrompt
+          ? `${input.customPrompt}\n\n以下是关于「${topic.label}」的文本片段：`
+          : `你是一个专业的内容总结助手。请根据以下关于「${topic.label}」话题的多个文本片段，生成一份结构化的总结。\n\n要求：\n- 总结应该涵盖所有片段的核心观点\n- 使用清晰的中文表达\n- 长度适中（300-600字）\n- 可以使用 Markdown 格式`;
+
         const response = await invokeLLM({
           messages: [
             {
               role: "system",
-              content: `你是一个专业的内容总结助手。请根据以下关于「${topic.label}」话题的多个文本片段，生成一份结构化的总结。
-
-要求：
-- 总结应该涵盖所有片段的核心观点
-- 使用清晰的中文表达
-- 长度适中（300-600字）
-- 可以使用 Markdown 格式`,
+              content: systemPrompt,
             },
             { role: "user", content: chunksText },
           ],
@@ -444,10 +445,13 @@ export const appRouter = router({
       .input(z.object({
         projectId: z.number(),
         query: z.string().min(1).max(500),
+        customPrompt: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
-        // 1. Search chunks by keyword
-        const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+        // 1. Try merged chunks first, fallback to original chunks
+        const mergedMatches = await searchMergedChunksByKeyword(input.projectId, input.query);
+        const useMerged = mergedMatches.length > 0;
+        const matchedChunks = useMerged ? mergedMatches : await searchChunksByKeyword(input.projectId, input.query);
 
         if (matchedChunks.length === 0) {
           return {
@@ -460,14 +464,10 @@ export const appRouter = router({
 
         // 2. Prepare chunks text for LLM (limit to avoid token overflow)
         const topChunks = matchedChunks.slice(0, 15);
-        const chunksText = topChunks.map((c, i) => `[片段 ${i + 1} - 来自: ${c.filename}]\n${c.content}`).join("\n\n---\n\n");
+        const chunksText = topChunks.map((c: any, i: number) => `[片段 ${i + 1} - 来自: ${c.filename}]\n${c.content}`).join("\n\n---\n\n");
 
-        // 3. Call LLM to synthesize
-        const response = await invokeLLM({
-          messages: [
-            {
-              role: "system",
-              content: `你是一个专业的知识整理助手。用户正在探索关于「${input.query}」的话题。
+        // 3. Build system prompt (use custom if provided)
+        const defaultPrompt = `你是一个专业的知识整理助手。用户正在探索关于「${input.query}」的话题。
 请根据以下相关文本片段，生成一份结构化的话题总结。
 
 要求：
@@ -476,10 +476,18 @@ export const appRouter = router({
 - 使用清晰的中文表达
 - 长度适中（300-800字）
 - 可以使用 Markdown 格式
-- 在总结末尾标注引用了哪些片段编号
+- 在总结末尾标注引用了哪些片段编号`;
 
-返回 JSON 格式：
-{"title": "话题标题", "summary": "总结内容（Markdown）"}`,
+        const systemPrompt = input.customPrompt
+          ? `${input.customPrompt}\n\n用户正在探索关于「${input.query}」的话题。\n\n另外，请按以下 JSON 格式返回：\n{"title": "话题标题（5-15字）", "summary": "总结内容（Markdown）"}\n在总结末尾标注引用了哪些片段编号。`
+          : `${defaultPrompt}\n\n返回 JSON 格式：\n{"title": "话题标题", "summary": "总结内容（Markdown）"}`;
+
+        // 4. Call LLM to synthesize
+        const response = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
             },
             { role: "user", content: chunksText },
           ],
@@ -545,6 +553,151 @@ export const appRouter = router({
         }
 
         return { topicId };
+      }),
+  }),
+
+  // ─── Merged Chunk Management ──────────────────────────────────────
+  mergedChunk: router({
+    // Get merged chunks for a document
+    byDocument: protectedProcedure
+      .input(z.object({ documentId: z.number() }))
+      .query(async ({ input }) => {
+        return getMergedChunksByDocument(input.documentId);
+      }),
+
+    // Get all merged chunks for a project
+    byProject: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => {
+        return getMergedChunksByProject(input.projectId);
+      }),
+
+    // Check if a document has merged chunks
+    hasMerged: protectedProcedure
+      .input(z.object({ documentId: z.number() }))
+      .query(async ({ input }) => {
+        return hasMergedChunks(input.documentId);
+      }),
+
+    // Merge chunks for a document (LLM-based semantic merging)
+    merge: protectedProcedure
+      .input(z.object({ documentId: z.number() }))
+      .mutation(async ({ input }) => {
+        const doc = await getDocumentById(input.documentId);
+        if (!doc) throw new Error("Document not found");
+
+        const docChunks = await getChunksByDocument(input.documentId);
+        if (docChunks.length === 0) throw new Error("No chunks found for document");
+
+        // Delete existing merged chunks for this document
+        await deleteMergedChunksByDocument(input.documentId);
+
+        // Group chunks into batches of 5-8 for LLM merging
+        const BATCH_MIN = 5;
+        const BATCH_MAX = 8;
+        const mergedResults: Array<{ content: string; sourceChunkIds: number[] }> = [];
+
+        let i = 0;
+        while (i < docChunks.length) {
+          const remaining = docChunks.length - i;
+          // Determine batch size: aim for 5-8, but handle remainder
+          let batchSize = Math.min(BATCH_MAX, remaining);
+          if (remaining > BATCH_MAX && remaining < BATCH_MIN + BATCH_MIN) {
+            // If remaining is between BATCH_MAX+1 and 2*BATCH_MIN-1, split evenly
+            batchSize = Math.ceil(remaining / 2);
+          }
+          const batch = docChunks.slice(i, i + batchSize);
+          i += batchSize;
+
+          // Prepare batch text for LLM
+          const batchText = batch.map((c, idx) => `[片段 ${idx + 1} (ID: ${c.id})]\n${c.content}`).join("\n\n---\n\n");
+
+          try {
+            const response = await invokeLLM({
+              messages: [
+                {
+                  role: "system",
+                  content: `你是一个文本合并助手。以下是一组按顺序排列的文本片段。请分析它们的语义相关性，将属于同一话题的相邻片段合并成更大的段落。
+
+规则：
+- 只合并相邻的、语义相关的片段
+- 如果某个片段与前后片段话题不同，它应该单独成为一个合并块
+- 合并时保留原文内容，不要改写或缩写
+- 合并后的段落之间用两个换行符分隔
+
+返回 JSON 格式：
+{"groups": [{"chunk_ids": [1, 2, 3], "merged_content": "合并后的内容..."}]}`,
+                },
+                { role: "user", content: batchText },
+              ],
+              response_format: {
+                type: "json_schema",
+                json_schema: {
+                  name: "chunk_merge",
+                  strict: true,
+                  schema: {
+                    type: "object",
+                    properties: {
+                      groups: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            chunk_ids: { type: "array", items: { type: "number" } },
+                            merged_content: { type: "string" },
+                          },
+                          required: ["chunk_ids", "merged_content"],
+                          additionalProperties: false,
+                        },
+                      },
+                    },
+                    required: ["groups"],
+                    additionalProperties: false,
+                  },
+                },
+              },
+            });
+
+            const content = response.choices[0]?.message?.content;
+            if (content && typeof content === "string") {
+              const parsed = JSON.parse(content);
+              for (const group of parsed.groups) {
+                mergedResults.push({
+                  content: group.merged_content,
+                  sourceChunkIds: group.chunk_ids,
+                });
+              }
+            } else {
+              // Fallback: treat entire batch as one merged chunk
+              mergedResults.push({
+                content: batch.map(c => c.content).join("\n\n"),
+                sourceChunkIds: batch.map(c => c.id),
+              });
+            }
+          } catch (err) {
+            // Fallback on LLM error: treat batch as one merged chunk
+            mergedResults.push({
+              content: batch.map(c => c.content).join("\n\n"),
+              sourceChunkIds: batch.map(c => c.id),
+            });
+          }
+        }
+
+        // Insert merged chunks into database
+        const mergedData = mergedResults.map((m, idx) => ({
+          documentId: input.documentId,
+          projectId: doc.projectId ?? null,
+          content: m.content,
+          sourceChunkIds: JSON.stringify(m.sourceChunkIds),
+          position: idx,
+        }));
+
+        await insertMergedChunks(mergedData);
+
+        return {
+          mergedCount: mergedResults.length,
+          originalCount: docChunks.length,
+        };
       }),
   }),
 });

@@ -25,7 +25,7 @@ import {
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   Upload, FileText, Tags, Brain, LogOut, PanelLeft,
-  ChevronLeft, FolderOpen, Loader2, Sparkles, Users, Shield,
+  ChevronLeft, FolderOpen, Loader2, Sparkles, Shield, KeyRound,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState, useMemo } from "react";
 import { useLocation, useParams } from "wouter";
@@ -36,7 +36,7 @@ import ChunksPage from "./Chunks";
 import TopicsPage from "./Topics";
 import TopicDetailPage from "./TopicDetail";
 import ExplorePage from "./Explore";
-import UserManagementPage from "./UserManagement";
+import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 260;
@@ -100,6 +100,7 @@ function WorkspaceContent({
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   const { data: project } = trpc.project.get.useQuery(
     { id: projectId },
@@ -114,7 +115,6 @@ function WorkspaceContent({
     if (tab === "chunks") return "chunks";
     if (tab === "topics") return "topics";
     if (tab === "explore") return "explore";
-    if (tab === "users") return "users";
     return "upload";
   }, [tab, location]);
 
@@ -125,13 +125,7 @@ function WorkspaceContent({
     { icon: Sparkles, label: "话题探索", key: "explore", path: `/project/${projectId}/explore` },
   ];
 
-  // Admin-only menu items
-  const adminItems = user?.role === "admin" ? [
-    { icon: Users, label: "用户管理", key: "users", path: `/project/${projectId}/users` },
-  ] : [];
-
-  const allMenuItems = [...menuItems, ...adminItems];
-  const activeMenuItem = allMenuItems.find(item => item.key === activeTab) || menuItems[0];
+  const activeMenuItem = menuItems.find(item => item.key === activeTab) || menuItems[0];
 
   useEffect(() => {
     if (isCollapsed) setIsResizing(false);
@@ -248,34 +242,7 @@ function WorkspaceContent({
               })}
             </SidebarMenu>
 
-            {/* Admin section */}
-            {adminItems.length > 0 && (
-              <>
-                {!isCollapsed && (
-                  <div className="px-4 py-2 mt-2">
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">管理</span>
-                  </div>
-                )}
-                <SidebarMenu className="px-2">
-                  {adminItems.map(item => {
-                    const isActive = item.key === activeTab;
-                    return (
-                      <SidebarMenuItem key={item.key}>
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          onClick={() => setLocation(item.path)}
-                          tooltip={item.label}
-                          className="h-10 transition-all font-normal"
-                        >
-                          <item.icon className={`h-4 w-4 ${isActive ? "text-cyan-400" : ""}`} />
-                          <span>{item.label}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    );
-                  })}
-                </SidebarMenu>
-              </>
-            )}
+
           </SidebarContent>
 
           <SidebarFooter className="p-3">
@@ -302,8 +269,16 @@ function WorkspaceContent({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
                 <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                  {user?.role === "admin" ? "管理员" : "成员"}
+                  @{user?.username} · {user?.role === "admin" ? "管理员" : "成员"}
                 </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setShowChangePassword(true)}
+                  className="cursor-pointer"
+                >
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  <span>修改密码</span>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={handleLogout}
@@ -339,12 +314,14 @@ function WorkspaceContent({
           {activeTab === "chunks" && <ChunksPage projectId={projectId} />}
           {activeTab === "topics" && <TopicsPage projectId={projectId} />}
           {activeTab === "explore" && <ExplorePage projectId={projectId} />}
-          {activeTab === "users" && <UserManagementPage />}
           {activeTab === "topic-detail" && topicIdFromUrl && (
             <TopicDetailPage projectId={projectId} topicId={topicIdFromUrl} />
           )}
         </main>
       </SidebarInset>
+
+      {/* Change Password Dialog */}
+      <ChangePasswordDialog open={showChangePassword} onOpenChange={setShowChangePassword} />
     </>
   );
 }

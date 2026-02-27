@@ -1,0 +1,1 @@
+ALTER TABLE `cortex_users` ADD `initialPassword` varchar(256);

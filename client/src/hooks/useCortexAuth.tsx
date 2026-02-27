@@ -11,6 +11,7 @@ export interface CortexUser {
   username: string;
   displayName: string | null;
   role: "admin" | "member";
+  initialPassword?: string | null;
 }
 
 interface CortexAuthState {
@@ -22,6 +23,8 @@ interface CortexAuthState {
   logout: () => Promise<void>;
   registerUser: (data: { username: string; password: string; displayName?: string; role?: string }) => Promise<void>;
   listUsers: () => Promise<CortexUser[]>;
+  changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
+  deleteUser: (userId: number) => Promise<{ deletedProjects: number }>;
 }
 
 const CortexAuthContext = createContext<CortexAuthState | null>(null);
@@ -104,6 +107,31 @@ export function CortexAuthProvider({ children }: { children: ReactNode }) {
     return data;
   }, []);
 
+  const changePassword = useCallback(async (oldPassword: string, newPassword: string) => {
+    const res = await fetch("/api/cortex-auth/change-password", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ oldPassword, newPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "修改密码失败");
+    }
+  }, []);
+
+  const deleteUser = useCallback(async (userId: number) => {
+    const res = await fetch(`/api/cortex-auth/users/${userId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "删除用户失败");
+    }
+    return data;
+  }, []);
+
   return (
     <CortexAuthContext.Provider
       value={{
@@ -115,6 +143,8 @@ export function CortexAuthProvider({ children }: { children: ReactNode }) {
         logout,
         registerUser,
         listUsers,
+        changePassword,
+        deleteUser,
       }}
     >
       {children}
