@@ -81,6 +81,16 @@ export default function ProjectList() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            {/* Settings Button */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+              onClick={() => setLocation("/settings")}
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+
             {/* Admin: User Management Button */}
             {user.role === "admin" && (
               <Button
@@ -114,6 +124,13 @@ export default function ProjectList() {
                   @{user.username} · {user.role === "admin" ? "管理员" : "成员"}
                 </div>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setLocation("/settings")}
+                  className="cursor-pointer"
+                >
+                  <Settings className="mr-2 h-4 w-4" />
+                  <span>系统设置</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => setShowChangePassword(true)}
                   className="cursor-pointer"

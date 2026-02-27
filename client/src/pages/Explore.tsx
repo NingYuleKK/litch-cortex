@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import { Search, Sparkles, Save, Loader2, FileText, ChevronDown, ChevronUp, Download, FileDown } from "lucide-react";
 import PromptTemplateSelector from "@/components/PromptTemplateSelector";
-import { getSelectedTemplateId, getEffectivePrompt } from "@/lib/promptTemplates";
 import { exportAsMarkdown, exportAsPdf } from "@/lib/exportTopic";
 
 interface ExploreResult {
@@ -26,7 +25,7 @@ export default function Explore({ projectId }: { projectId: number }) {
   const [result, setResult] = useState<ExploreResult | null>(null);
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
 
-  const [selectedTemplateId, setSelectedTemplateId] = useState(() => getSelectedTemplateId());
+  const [selectedPrompt, setSelectedPrompt] = useState<string | undefined>(undefined);
 
   const searchMutation = trpc.explore.search.useMutation({
     onSuccess: (data) => {
@@ -50,8 +49,7 @@ export default function Explore({ projectId }: { projectId: number }) {
     e.preventDefault();
     if (!query.trim()) return;
     setResult(null);
-    const customPrompt = selectedTemplateId !== "academic" ? getEffectivePrompt(selectedTemplateId) : undefined;
-    searchMutation.mutate({ projectId, query: query.trim(), customPrompt });
+    searchMutation.mutate({ projectId, query: query.trim(), customPrompt: selectedPrompt });
   }
 
   function handleSave() {
@@ -113,7 +111,7 @@ export default function Explore({ projectId }: { projectId: number }) {
         <div className="flex items-center gap-2">
           <PromptTemplateSelector
             compact
-            onTemplateChange={(id) => setSelectedTemplateId(id)}
+            onTemplateChange={(_id, prompt) => setSelectedPrompt(prompt)}
           />
           <span className="text-xs text-muted-foreground">选择 Prompt 模板影响 LLM 输出风格</span>
         </div>

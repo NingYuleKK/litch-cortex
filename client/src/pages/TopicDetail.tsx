@@ -8,7 +8,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, FileText, Loader2, Sparkles, Save, Tags, Download, FileDown, Merge, RefreshCw } from "lucide-react";
 import { useState, useEffect } from "react";
 import PromptTemplateSelector from "@/components/PromptTemplateSelector";
-import { getSelectedTemplateId, getEffectivePrompt } from "@/lib/promptTemplates";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
@@ -26,7 +25,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
 
   const [summaryText, setSummaryText] = useState("");
   const [isEditing, setIsEditing] = useState(false);
-  const [selectedTemplateId, setSelectedTemplateId] = useState(() => getSelectedTemplateId());
+  const [selectedPrompt, setSelectedPrompt] = useState<string | undefined>(undefined);
   const [chunkTab, setChunkTab] = useState<"original" | "merged">("original");
 
   // Merged chunks query
@@ -315,8 +314,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
                   size="sm"
                   className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/10"
                   onClick={() => {
-                    const customPrompt = selectedTemplateId !== "academic" ? getEffectivePrompt(selectedTemplateId) : undefined;
-                    generateMutation.mutate({ topicId, projectId, customPrompt });
+                    generateMutation.mutate({ topicId, projectId, customPrompt: selectedPrompt });
                   }}
                   disabled={generateMutation.isPending}
                 >
@@ -329,7 +327,7 @@ export default function TopicDetailPage({ projectId, topicId: propTopicId }: { p
                 </Button>
                 <PromptTemplateSelector
                   compact
-                  onTemplateChange={(id) => setSelectedTemplateId(id)}
+                  onTemplateChange={(_id, prompt) => setSelectedPrompt(prompt)}
                 />
               </div>
             </div>

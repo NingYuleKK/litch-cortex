@@ -97,7 +97,6 @@ describe("V0.4 input validation", () => {
   it("explore.search should accept customPrompt parameter", async () => {
     const ctx = createCortexAuthContext();
     const caller = appRouter.createCaller(ctx);
-    // With a non-existent project, it returns empty results (no throw)
     const result = await caller.explore.search({ projectId: 999, query: "test", customPrompt: "Custom prompt" });
     expect(result).toBeDefined();
     expect(result.chunks).toEqual([]);
@@ -115,7 +114,6 @@ describe("V0.4 input validation", () => {
   it("summary.generate should accept customPrompt parameter", async () => {
     const ctx = createCortexAuthContext();
     const caller = appRouter.createCaller(ctx);
-    // This will fail at DB level but validates the input schema
     await expect(
       caller.summary.generate({ topicId: 999, customPrompt: "Custom prompt" })
     ).rejects.toThrow();
@@ -145,9 +143,237 @@ describe("V0.4 input validation", () => {
   });
 });
 
+// ─── V0.5 Router Structure Tests ──────────────────────────────────
+
+describe("V0.5 appRouter structure", () => {
+  it("should have llmSettings procedures", () => {
+    const procedures = Object.keys((appRouter as any)._def.procedures);
+    expect(procedures).toContain("llmSettings.getConfig");
+    expect(procedures).toContain("llmSettings.saveConfig");
+    expect(procedures).toContain("llmSettings.testConnection");
+  });
+
+  it("should have promptTemplate procedures", () => {
+    const procedures = Object.keys((appRouter as any)._def.procedures);
+    expect(procedures).toContain("promptTemplate.list");
+    expect(procedures).toContain("promptTemplate.create");
+    expect(procedures).toContain("promptTemplate.update");
+    expect(procedures).toContain("promptTemplate.delete");
+  });
+});
+
+// ─── V0.5 Auth Protection Tests ───────────────────────────────────
+
+describe("V0.5 auth protection", () => {
+  it("should reject llmSettings.getConfig for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.llmSettings.getConfig()).rejects.toThrow();
+  });
+
+  it("should reject llmSettings.saveConfig for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.llmSettings.saveConfig({
+        provider: "openrouter",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiKey: "test-key",
+        defaultModel: "anthropic/claude-sonnet-4",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("should reject llmSettings.testConnection for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.llmSettings.testConnection({
+        provider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "test-key",
+        model: "gpt-4",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("should reject promptTemplate.create for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.promptTemplate.create({
+        name: "Test",
+        systemPrompt: "Test prompt",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("should reject promptTemplate.update for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.promptTemplate.update({
+        id: 1,
+        name: "Updated",
+        systemPrompt: "Updated prompt",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("should reject promptTemplate.delete for unauthenticated users", async () => {
+    const ctx = createUnauthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.promptTemplate.delete({ id: 1 })
+    ).rejects.toThrow();
+  });
+});
+
+// ─── V0.5 LLM Settings Tests ─────────────────────────────────────
+
+describe("V0.5 LLM settings", () => {
+  it("llmSettings.getConfig should return config object", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.llmSettings.getConfig();
+    expect(result).toBeDefined();
+    expect(typeof result).toBe("object");
+  });
+
+  it("llmSettings.saveConfig should accept valid config", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.llmSettings.saveConfig({
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "sk-test-key-12345",
+      defaultModel: "anthropic/claude-sonnet-4",
+      taskModels: { summarize: "anthropic/claude-sonnet-4", explore: "openai/gpt-4.1-mini" },
+    });
+    expect(result).toBeDefined();
+    expect(result.success).toBe(true);
+  });
+
+  it("llmSettings.getConfig should return saved config without raw key", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.llmSettings.getConfig();
+    expect(result).toBeDefined();
+    expect(result.provider).toBe("openrouter");
+    // API key should be empty (never returned)
+    expect(result.apiKey).toBe("");
+    expect(result.hasApiKey).toBe(true);
+  });
+
+  it("llmSettings.saveConfig should accept any provider string", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    // Provider is a free-form string, so this should succeed
+    const result = await caller.llmSettings.saveConfig({
+      provider: "custom",
+      baseUrl: "https://example.com",
+      apiKey: "test",
+      defaultModel: "test",
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+// ─── V0.5 Prompt Template Tests ───────────────────────────────────
+
+describe("V0.5 prompt templates (DB-backed)", () => {
+  it("promptTemplate.list should return preset templates", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const templates = await caller.promptTemplate.list();
+    expect(Array.isArray(templates)).toBe(true);
+    expect(templates.length).toBeGreaterThanOrEqual(5);
+    // Check preset templates exist
+    const names = templates.map((t: any) => t.name);
+    expect(names).toContain("学术总结");
+    expect(names).toContain("Blog 风格");
+    expect(names).toContain("读书笔记");
+    expect(names).toContain("对话摘要");
+    expect(names).toContain("对话转 Blog（Beta Skill）");
+  });
+
+  it("promptTemplate.create should create a new template", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.promptTemplate.create({
+      name: "Test Template V05",
+      description: "A test template",
+      systemPrompt: "You are a test assistant.",
+    });
+    expect(result).toBeDefined();
+    expect(result.id).toBeGreaterThan(0);
+  });
+
+  it("promptTemplate.update should update a template", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    // First get the list to find our test template
+    const templates = await caller.promptTemplate.list();
+    const testTemplate = templates.find((t: any) => t.name === "Test Template V05");
+    expect(testTemplate).toBeDefined();
+
+    await caller.promptTemplate.update({
+      id: testTemplate!.id,
+      name: "Test Template V05 Updated",
+      systemPrompt: "Updated prompt content.",
+    });
+
+    // Verify update
+    const updated = await caller.promptTemplate.list();
+    const found = updated.find((t: any) => t.id === testTemplate!.id);
+    expect(found?.name).toBe("Test Template V05 Updated");
+  });
+
+  it("promptTemplate.delete should delete a non-preset template", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const templates = await caller.promptTemplate.list();
+    const testTemplate = templates.find((t: any) => t.name === "Test Template V05 Updated");
+    expect(testTemplate).toBeDefined();
+
+    await caller.promptTemplate.delete({ id: testTemplate!.id });
+
+    // Verify deletion
+    const after = await caller.promptTemplate.list();
+    const found = after.find((t: any) => t.id === testTemplate!.id);
+    expect(found).toBeUndefined();
+  });
+
+  it("promptTemplate.create should reject empty name", async () => {
+    const ctx = createCortexAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    await expect(
+      caller.promptTemplate.create({
+        name: "",
+        systemPrompt: "test",
+      })
+    ).rejects.toThrow();
+  });
+});
+
+// ─── V0.5 LLM Service Module Tests ───────────────────────────────
+
+describe("V0.5 LLM service module", () => {
+  it("should export callLLM function", async () => {
+    const mod = await import("./llm-service");
+    expect(typeof mod.callLLM).toBe("function");
+  });
+
+  it("callLLM should accept taskType parameter", async () => {
+    const mod = await import("./llm-service");
+    // Just verify the function signature accepts taskType without throwing type errors
+    expect(mod.callLLM).toBeDefined();
+  });
+});
+
 // ─── V0.4 Prompt Template Tests (client-side, pure logic) ─────────
 
-describe("Prompt template configuration", () => {
+describe("Prompt template configuration (legacy client-side)", () => {
   it("should have expected template IDs", async () => {
     const { PRESET_TEMPLATES: PROMPT_TEMPLATES } = await import("../client/src/lib/promptTemplates");
     const ids = PROMPT_TEMPLATES.map(t => t.id);

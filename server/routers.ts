@@ -12,9 +12,12 @@ import {
   searchChunksByKeyword,
   insertMergedChunks, getMergedChunksByTopic, getMergedChunksByProject,
   deleteMergedChunksByTopic, hasMergedChunksForTopic,
+  getActiveLlmConfig, upsertLlmConfig,
+  getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
 } from "./db";
 import { storagePut } from "./storage";
-import { invokeLLM } from "./_core/llm";
+import { callLLM } from "./llm-service";
+import { encodeApiKey, decodeApiKey, getProviderDefaults } from "./llm-service";
 import { nanoid } from "nanoid";
 
 // ─── PDF parsing helper ─────────────────────────────────────────────
@@ -216,7 +219,8 @@ export const appRouter = router({
         const chunk = await getChunkById(input.chunkId);
         if (!chunk) throw new Error("Chunk not found");
 
-        const response = await invokeLLM({
+        const response = await callLLM({
+          taskType: "topic_extract",
           messages: [
             {
               role: "system",
@@ -290,9 +294,11 @@ export const appRouter = router({
 
         for (const chunk of docChunks) {
           try {
-            const response = await invokeLLM({
+            const response = await callLLM({
+              taskType: "topic_extract",
               messages: [
                 {
+        
                   role: "system",
                   content: `你是一个话题提取助手。请从给定的文本中提取 1-2 个核心话题标签。
 要求：
@@ -301,8 +307,7 @@ export const appRouter = router({
 - 返回 JSON 格式
 
 返回格式：
-{"topics": [{"label": "话题名称", "relevance": 0.9}]}`,
-                },
+{"topics": [{"label": "话题名称", "relevance": 0.9}]}`            },
                 { role: "user", content: chunk.content },
               ],
               response_format: {
@@ -421,7 +426,8 @@ export const appRouter = router({
           ? `${input.customPrompt}\n\n以下是关于「${topic.label}」的文本片段：`
           : `你是一个专业的内容总结助手。请根据以下关于「${topic.label}」话题的多个文本片段，生成一份结构化的总结。\n\n要求：\n- 总结应该涵盖所有片段的核心观点\n- 使用清晰的中文表达\n- 长度适中（300-600字）\n- 可以使用 Markdown 格式`;
 
-        const response = await invokeLLM({
+        const response = await callLLM({
+          taskType: "summarize",
           messages: [
             {
               role: "system",
@@ -481,7 +487,8 @@ export const appRouter = router({
           : `${defaultPrompt}\n\n返回 JSON 格式：\n{"title": "话题标题", "summary": "总结内容（Markdown）"}`;
 
         // 4. Call LLM to synthesize
-        const response = await invokeLLM({
+        const response = await callLLM({
+          taskType: "explore",
           messages: [
             {
               role: "system",
@@ -609,7 +616,8 @@ export const appRouter = router({
           const batchText = batch.map((c: any, idx: number) => `[片段 ${idx + 1} (ID: ${c.id})]\n${c.content}`).join("\n\n---\n\n");
 
           try {
-            const response = await invokeLLM({
+            const response = await callLLM({
+              taskType: "chunk_merge",
               messages: [
                 {
                   role: "system",
@@ -692,6 +700,154 @@ export const appRouter = router({
           mergedCount: mergedResults.length,
           originalCount: topicChunks.length,
         };
+      }),
+  }),
+
+  // ─── LLM Settings Router ──────────────────────────────────────────
+  llmSettings: router({
+    getConfig: protectedProcedure.query(async () => {
+      const config = await getActiveLlmConfig();
+      if (!config) {
+        return {
+          provider: "builtin",
+          baseUrl: "",
+          apiKey: "",
+          defaultModel: "gemini-2.5-flash",
+          taskModels: {} as Record<string, string>,
+          hasApiKey: false,
+        };
+      }
+      let taskModels: Record<string, string> = {};
+      if (config.taskModels) {
+        try { taskModels = JSON.parse(config.taskModels); } catch { taskModels = {}; }
+      }
+      return {
+        provider: config.provider,
+        baseUrl: config.baseUrl || "",
+        apiKey: "", // Never return the actual key
+        defaultModel: config.defaultModel || "",
+        taskModels,
+        hasApiKey: !!config.apiKeyEncrypted,
+      };
+    }),
+
+    saveConfig: protectedProcedure
+      .input(z.object({
+        provider: z.string(),
+        baseUrl: z.string().optional(),
+        apiKey: z.string().optional(), // plain text, will be encoded
+        defaultModel: z.string().optional(),
+        taskModels: z.record(z.string(), z.string()).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const apiKeyEncrypted = input.apiKey ? encodeApiKey(input.apiKey) : undefined;
+        await upsertLlmConfig({
+          provider: input.provider,
+          baseUrl: input.baseUrl || null,
+          apiKeyEncrypted: apiKeyEncrypted || null,
+          defaultModel: input.defaultModel || null,
+          taskModels: input.taskModels ? JSON.stringify(input.taskModels) : null,
+        });
+        return { success: true };
+      }),
+
+    getProviderDefaults: protectedProcedure.query(() => {
+      return getProviderDefaults();
+    }),
+
+    testConnection: protectedProcedure
+      .input(z.object({
+        provider: z.string(),
+        baseUrl: z.string().optional(),
+        apiKey: z.string(),
+        model: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          // Test by making a simple LLM call
+          const baseUrl = (input.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "");
+          const model = input.model || "gpt-4.1-mini";
+          const response = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${input.apiKey}`,
+              ...(input.provider === "openrouter" ? {
+                "HTTP-Referer": "https://cortex.litch.app",
+                "X-Title": "Litch's Cortex",
+              } : {}),
+            },
+            body: JSON.stringify({
+              model,
+              messages: [{ role: "user", content: "Say hello in 5 words." }],
+              max_tokens: 50,
+            }),
+          });
+          if (!response.ok) {
+            const errText = await response.text();
+            return { success: false, error: `${response.status}: ${errText.substring(0, 200)}` };
+          }
+          const data = await response.json();
+          const reply = data.choices?.[0]?.message?.content || "(no response)";
+          return { success: true, reply, model: data.model };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      }),
+  }),
+
+  // ─── Prompt Template Router ──────────────────────────────────────
+  promptTemplate: router({
+    list: protectedProcedure.query(async () => {
+      // Seed presets on first access
+      await seedPresetTemplates();
+      return getAllPromptTemplates();
+    }),
+
+    getById: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return getPromptTemplateById(input.id);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1),
+        description: z.string().optional(),
+        systemPrompt: z.string().min(1),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const id = await createPromptTemplate({
+          name: input.name,
+          description: input.description || null,
+          systemPrompt: input.systemPrompt,
+          isPreset: 0,
+          createdBy: (ctx.user as any)?.cortexUserId || null,
+        });
+        return { id };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().optional(),
+        description: z.string().optional(),
+        systemPrompt: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await updatePromptTemplate(input.id, {
+          name: input.name,
+          description: input.description,
+          systemPrompt: input.systemPrompt,
+        });
+        return { success: true };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deletePromptTemplate(input.id);
+        return { success: true };
       }),
   }),
 });

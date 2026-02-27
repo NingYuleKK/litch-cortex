@@ -9,6 +9,8 @@ import Login from "./pages/Login";
 import ProjectList from "./pages/ProjectList";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import UserManagement from "./pages/UserManagement";
+import Settings from "./pages/Settings";
+import PromptTemplateManager from "./pages/PromptTemplateManager";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useCortexAuth();
@@ -53,6 +55,16 @@ function Router() {
       <Route path="/admin/users">
         <AuthGuard>
           <UserManagement />
+        </AuthGuard>
+      </Route>
+      <Route path="/settings">
+        <AuthGuard>
+          <Settings />
+        </AuthGuard>
+      </Route>
+      <Route path="/settings/templates">
+        <AuthGuard>
+          <PromptTemplateManager />
         </AuthGuard>
       </Route>
       <Route path="/404" component={NotFound} />

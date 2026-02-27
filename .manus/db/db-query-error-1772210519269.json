@@ -1,0 +1,8 @@
+{
+  "query": "SELECT COUNT(*) as cnt FROM prompt_templates WHERE is_preset = 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2hKcgV7cyBoGbvr.45256e43275f --database B5ULm8LpL8tpfAkdFwhkyX --execute SELECT COUNT(*) as cnt FROM prompt_templates WHERE is_preset = 1;",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1054 (42S22) at line 1: Unknown column 'is_preset' in 'where clause'"
+  ]
+}

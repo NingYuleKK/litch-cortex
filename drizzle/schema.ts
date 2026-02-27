@@ -139,3 +139,41 @@ export const mergedChunks = mysqlTable("merged_chunks", {
 
 export type MergedChunk = typeof mergedChunks.$inferSelect;
 export type InsertMergedChunk = typeof mergedChunks.$inferInsert;
+
+/**
+ * LLM configuration - stores provider settings and per-task model overrides.
+ * API keys are stored base64-encoded (not plaintext).
+ */
+export const llmConfig = mysqlTable("llm_config", {
+  id: int("id").autoincrement().primaryKey(),
+  provider: varchar("provider", { length: 64 }).notNull().default("builtin"), // builtin | openai | openrouter | custom
+  baseUrl: varchar("baseUrl", { length: 512 }),
+  apiKeyEncrypted: text("apiKeyEncrypted"), // base64-encoded API key
+  defaultModel: varchar("defaultModel", { length: 256 }),
+  // Per-task model overrides (JSON: { task_type: model_name })
+  taskModels: text("taskModels"), // JSON: { topic_extract: "...", summarize: "...", explore: "...", chunk_merge: "..." }
+  isActive: int("isActive").default(1).notNull(), // only one active config at a time
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type LlmConfig = typeof llmConfig.$inferSelect;
+export type InsertLlmConfig = typeof llmConfig.$inferInsert;
+
+/**
+ * Prompt templates - stored in DB for multi-user access.
+ * Replaces localStorage-based custom prompt storage.
+ */
+export const promptTemplates = mysqlTable("prompt_templates", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 256 }).notNull(),
+  description: varchar("description", { length: 512 }),
+  systemPrompt: mediumtext("systemPrompt").notNull(),
+  isPreset: int("isPreset").default(0).notNull(), // 1 = system preset, 0 = user-created
+  createdBy: int("createdBy"), // cortexUserId, null for system presets
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type PromptTemplate = typeof promptTemplates.$inferSelect;
+export type InsertPromptTemplate = typeof promptTemplates.$inferInsert;

@@ -138,3 +138,40 @@
 - [x] 重新设计合并分段：分段预览页合并 tab 按话题分组展示
 - [x] 推送 GitHub 并保存 checkpoint
 - [x] 更新 Vitest 测试
+
+## V0.5 LLM Service 重构
+
+### 功能一：后端 LLM Service 抽象层
+- [x] 创建 server/llm-service.ts 统一封装所有 LLM 调用
+- [x] 定义 Provider 接口（OpenAI / OpenRouter / Custom）
+- [x] OpenRouter 支持（base_url: https://openrouter.ai/api/v1，model: anthropic/claude-sonnet-4 等）
+- [x] 所有现有 invokeLLM 调用点替换为统一服务（5 处：topic_extract, summarize, explore, chunk_merge）
+- [x] .env BUILT_IN_FORGE_API_KEY 作为 fallback（数据库没配置时使用）
+
+### 功能二：配置管理
+- [x] 新增 llm_config 表（provider, base_url, api_key_encrypted, default_model, task models）
+- [x] 任务类型字段：topic_extract, summarize, explore, chunk_merge
+- [x] API key 存储 base64 编码（不明文）
+- [x] 后端 CRUD API（读取/保存配置）
+- [x] 支持全局默认配置
+
+### 功能三：前端设置页 UI
+- [x] 导航栏加“设置”入口（齿轮图标）
+- [x] /settings 路由和页- [x] LLM Provider 选择（内置 / OpenAI / OpenRouter / 自定义）- [x] API Key 输入（密码框 + 显示/隐- [x] Base URL 配置（OpenRouter 自动填充）
+- [x] 默认模型选择
+- [x] 各任务类型模型配置（高级选项，可折叠）
+- [x] 赛博深色主题一致
+
+### 功能四：多自定义 Prompt 模板管理
+- [x] 新增 prompt_templates 表（从 localStorage 迁移到 DB）
+- [x] 后端 CRUD API（创建/列表/更新/删除模板）
+- [x] 前端模板管理 UI（命名/编辑/删除）
+- [x] “导入 Skill” 功能（粘贴 Skill prompt 导入为模板）
+- [x] 预置“对话转Blog”模板（基于 SKILL.md）
+- [x] PromptTemplateSelector 改为从 DB 读取模板
+- [x] 多用户共享模板
+
+### 交付
+- [x] 更新 Vitest 测试
+- [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
+- [x] 保存 checkpoint
