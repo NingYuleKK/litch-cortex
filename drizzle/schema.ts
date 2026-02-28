@@ -196,3 +196,38 @@ export const topicConversations = mysqlTable("topic_conversations", {
 
 export type TopicConversation = typeof topicConversations.$inferSelect;
 export type InsertTopicConversation = typeof topicConversations.$inferInsert;
+
+/**
+ * Chunk embeddings - stores vector embeddings for semantic search.
+ * Embedding vectors are stored as JSON text (array of floats).
+ */
+export const chunkEmbeddings = mysqlTable("chunk_embeddings", {
+  id: int("id").autoincrement().primaryKey(),
+  chunkId: int("chunkId").notNull(),
+  embedding: mediumtext("embedding").notNull(), // JSON array of floats
+  model: varchar("model", { length: 256 }).notNull(), // e.g. "text-embedding-3-small"
+  dimensions: int("dimensions").default(0).notNull(), // vector dimension count
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type ChunkEmbedding = typeof chunkEmbeddings.$inferSelect;
+export type InsertChunkEmbedding = typeof chunkEmbeddings.$inferInsert;
+
+/**
+ * Embedding configuration - separate from LLM config.
+ * Stores provider/model/key specifically for embedding generation.
+ */
+export const embeddingConfig = mysqlTable("embedding_config", {
+  id: int("id").autoincrement().primaryKey(),
+  provider: varchar("provider", { length: 64 }).notNull().default("openai"), // openai | custom
+  baseUrl: varchar("baseUrl", { length: 512 }),
+  apiKeyEncrypted: text("apiKeyEncrypted"), // base64-encoded API key
+  model: varchar("model", { length: 256 }).notNull().default("text-embedding-3-small"),
+  dimensions: int("dimensions").default(1536).notNull(),
+  isActive: int("isActive").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type EmbeddingConfig = typeof embeddingConfig.$inferSelect;
+export type InsertEmbeddingConfig = typeof embeddingConfig.$inferInsert;

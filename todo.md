@@ -217,4 +217,25 @@
 ### 交付
 - [x] 更新 Vitest 测试
 - [x] 推送 GitHub 并更新 HANDOVER_CORTEX.md
-- [ ] 保存 checkpoint
+- [x] 保存 checkpoint
+
+## V0.6 Embedding 向量搜索
+
+### 后端
+- [x] 新增 chunk_embeddings 表 + embedding_config 表
+- [x] 新增 Embedding Service（支持 OpenAI text-embedding-3-small，走 LLM Service 抽象层）
+- [x] 文档上传处理完成后自动生成 embedding（改为手动触发，避免上传延迟）
+- [x] 搜索 API 改造：embedding 余弦相似度 + top-K 返回（embedding.semanticSearch）
+- [x] 保留关键词搜索作为 fallback
+- [x] 已有文档支持手动触发"生成向量"（embedding.generateForProject）
+- [x] DB helpers（embedding CRUD + 相似度查询）
+
+### 前端
+- [x] 搜索结果展示优化：显示相似度分数
+- [x] 设置页增加 Embedding 模型配置
+- [x] 分段预览页增加"生成向量"按钮
+
+### 交付
+- [x] 更新 Vitest 测试（112 个测试全部通过）
+- [ ] 更新 HANDOVER_CORTEX.md（含完整路线图）
+- [ ] 推送 GitHub 并保存 checkpoint

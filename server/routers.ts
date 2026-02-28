@@ -15,10 +15,13 @@ import {
   getActiveLlmConfig, upsertLlmConfig,
   getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
   createTopicConversation, getTopicConversation, getConversationsByTopic, updateTopicConversation, deleteTopicConversation,
+  insertChunkEmbedding, insertChunkEmbeddingsBatch, getEmbeddingsByProject, getEmbeddingCountByProject, getChunksWithoutEmbedding,
+  getActiveEmbeddingConfig, upsertEmbeddingConfig,
 } from "./db";
 import { storagePut } from "./storage";
 import { callLLM } from "./llm-service";
 import { encodeApiKey, decodeApiKey, getProviderDefaults } from "./llm-service";
+import { generateEmbedding, generateEmbeddingsBatch, cosineSimilarity, getCurrentEmbeddingConfig } from "./embedding-service";
 import { nanoid } from "nanoid";
 
 // ─── PDF parsing helper ─────────────────────────────────────────────
@@ -1111,6 +1114,303 @@ export const appRouter = router({
           contentLength: promptContent.length,
           preview: promptContent.substring(0, 200) + (promptContent.length > 200 ? "..." : ""),
         };
+      }),
+  }),
+
+  // ─── Embedding Management ───────────────────────────────────────────
+  embedding: router({
+    // Get embedding status for a project
+    status: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => {
+        const counts = await getEmbeddingCountByProject(input.projectId);
+        return {
+          totalChunks: counts.total,
+          embeddedChunks: counts.withEmbedding,
+          percentage: counts.total > 0 ? Math.round((counts.withEmbedding / counts.total) * 100) : 0,
+        };
+      }),
+
+    // Generate embeddings for all un-embedded chunks in a project
+    generateForProject: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .mutation(async ({ input }) => {
+        const chunksToEmbed = await getChunksWithoutEmbedding(input.projectId);
+        if (chunksToEmbed.length === 0) {
+          return { generated: 0, message: "所有分段已有向量，无需重新生成。" };
+        }
+
+        // Truncate long texts to avoid token limits (max ~8000 chars per chunk for embedding)
+        const texts = chunksToEmbed.map(c => c.content.slice(0, 8000));
+
+        try {
+          const results = await generateEmbeddingsBatch(texts);
+
+          const embeddingData = results.map((r, idx) => ({
+            chunkId: chunksToEmbed[idx].id,
+            embedding: JSON.stringify(r.embedding),
+            model: r.model,
+            dimensions: r.dimensions,
+          }));
+
+          await insertChunkEmbeddingsBatch(embeddingData);
+
+          return {
+            generated: results.length,
+            model: results[0]?.model || "unknown",
+            dimensions: results[0]?.dimensions || 0,
+            message: `已为 ${results.length} 个分段生成向量。`,
+          };
+        } catch (err: any) {
+          throw new Error(`Embedding 生成失败: ${err.message}`);
+        }
+      }),
+
+    // Generate embedding for specific chunks
+    generateForChunks: protectedProcedure
+      .input(z.object({
+        chunkIds: z.array(z.number()).min(1).max(500),
+      }))
+      .mutation(async ({ input }) => {
+        // Get chunk contents
+        const chunkContents: Array<{ id: number; content: string }> = [];
+        for (const id of input.chunkIds) {
+          const chunk = await getChunkById(id);
+          if (chunk) {
+            chunkContents.push({ id: chunk.id, content: chunk.content });
+          }
+        }
+
+        if (chunkContents.length === 0) {
+          return { generated: 0, message: "未找到指定的分段。" };
+        }
+
+        const texts = chunkContents.map(c => c.content.slice(0, 8000));
+        const results = await generateEmbeddingsBatch(texts);
+
+        const embeddingData = results.map((r, idx) => ({
+          chunkId: chunkContents[idx].id,
+          embedding: JSON.stringify(r.embedding),
+          model: r.model,
+          dimensions: r.dimensions,
+        }));
+
+        await insertChunkEmbeddingsBatch(embeddingData);
+
+        return {
+          generated: results.length,
+          message: `已为 ${results.length} 个分段生成向量。`,
+        };
+      }),
+
+    // Semantic search using embeddings
+    semanticSearch: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        query: z.string().min(1).max(500),
+        topK: z.number().min(1).max(50).default(15),
+        customPrompt: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        // 1. Generate embedding for the query
+        let queryEmbedding: number[];
+        try {
+          const result = await generateEmbedding(input.query);
+          queryEmbedding = result.embedding;
+        } catch (err: any) {
+          // Fallback to keyword search if embedding fails
+          throw new Error(`向量搜索失败，请检查 Embedding 配置: ${err.message}`);
+        }
+
+        // 2. Get all embeddings for the project
+        const projectEmbeddings = await getEmbeddingsByProject(input.projectId);
+
+        if (projectEmbeddings.length === 0) {
+          // No embeddings, fallback to keyword search
+          const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+          if (matchedChunks.length === 0) {
+            return {
+              title: input.query,
+              summary: "未找到相关内容。请先在分段预览页生成向量，或尝试关键词搜索。",
+              chunks: [],
+              chunkCount: 0,
+              searchMode: "none" as const,
+              similarities: [] as number[],
+            };
+          }
+          const topChunks = matchedChunks.slice(0, input.topK);
+          return {
+            title: input.query,
+            summary: "未找到向量数据，已自动回退到关键词搜索。请在分段预览页生成向量以启用语义搜索。",
+            chunks: topChunks,
+            chunkCount: matchedChunks.length,
+            searchMode: "keyword" as const,
+            similarities: [] as number[],
+          };
+        }
+
+        // 3. Calculate cosine similarity for each chunk
+        const similarities: Array<{ chunkId: number; similarity: number; embedding: any }> = [];
+
+        for (const emb of projectEmbeddings) {
+          try {
+            const embVector = JSON.parse(emb.embedding) as number[];
+            const sim = cosineSimilarity(queryEmbedding, embVector);
+            similarities.push({ chunkId: emb.chunkId, similarity: sim, embedding: emb });
+          } catch {
+            // Skip invalid embeddings
+          }
+        }
+
+        // 4. Sort by similarity and take top-K
+        similarities.sort((a, b) => b.similarity - a.similarity);
+        const topResults = similarities.slice(0, input.topK);
+
+        if (topResults.length === 0) {
+          return {
+            title: input.query,
+            summary: "未找到相关内容。",
+            chunks: [],
+            chunkCount: 0,
+            searchMode: "semantic" as const,
+            similarities: [] as number[],
+          };
+        }
+
+        // 5. Fetch full chunk data for top results
+        const chunkIds = topResults.map(r => r.chunkId);
+        const chunkDataMap = new Map<number, any>();
+        for (const id of chunkIds) {
+          const chunk = await getChunkById(id);
+          if (chunk) chunkDataMap.set(id, chunk);
+        }
+
+        const topChunks = topResults
+          .filter(r => chunkDataMap.has(r.chunkId))
+          .map(r => {
+            const chunk = chunkDataMap.get(r.chunkId)!;
+            return {
+              id: chunk.id,
+              documentId: chunk.documentId,
+              content: chunk.content,
+              filename: (chunk as any).filename || `doc:${chunk.documentId}`,
+              similarity: Math.round(r.similarity * 10000) / 10000,
+            };
+          });
+
+        // 6. Build LLM synthesis prompt
+        const chunksText = topChunks.map((c, i) =>
+          `[片段 ${i + 1} - 来自: ${c.filename} | 相似度: ${(c.similarity * 100).toFixed(1)}%]\n${c.content}`
+        ).join("\n\n---\n\n");
+
+        const defaultPrompt = `你是一个专业的知识整理助手。用户正在探索关于「${input.query}」的话题。
+请根据以下相关文本片段（按语义相似度排序），生成一份结构化的话题总结。
+
+要求：
+- 给出一个精炼的话题标题（5-15字）
+- 总结涵盖所有片段的核心观点和关键信息
+- 使用清晰的中文表达
+- 长度适中（300-800字）
+- 可以使用 Markdown 格式
+- 在总结末尾标注引用了哪些片段编号`;
+
+        const systemPrompt = input.customPrompt
+          ? `${input.customPrompt}\n\n用户正在探索关于「${input.query}」的话题。\n\n另外，请按以下 JSON 格式返回：\n{"title": "话题标题（5-15字）", "summary": "总结内容（Markdown）"}\n在总结末尾标注引用了哪些片段编号。`
+          : `${defaultPrompt}\n\n返回 JSON 格式：\n{"title": "话题标题", "summary": "总结内容（Markdown）"}`;
+
+        try {
+          const response = await callLLM({
+            taskType: "explore",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: chunksText },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "topic_exploration",
+                strict: true,
+                schema: {
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    summary: { type: "string" },
+                  },
+                  required: ["title", "summary"],
+                  additionalProperties: false,
+                },
+              },
+            },
+          });
+
+          const content = response.choices[0]?.message?.content;
+          if (!content || typeof content !== "string") {
+            return {
+              title: input.query,
+              summary: "LLM 生成失败，请稍后重试。",
+              chunks: topChunks,
+              chunkCount: topChunks.length,
+              searchMode: "semantic" as const,
+              similarities: topChunks.map(c => c.similarity),
+            };
+          }
+
+          const parsed = JSON.parse(content);
+          return {
+            title: parsed.title,
+            summary: parsed.summary,
+            chunks: topChunks,
+            chunkCount: topChunks.length,
+            searchMode: "semantic" as const,
+            similarities: topChunks.map(c => c.similarity),
+          };
+        } catch (llmErr: any) {
+          // Return results without LLM synthesis
+          return {
+            title: input.query,
+            summary: `向量搜索完成，但 LLM 总结生成失败: ${llmErr.message?.substring(0, 100)}`,
+            chunks: topChunks,
+            chunkCount: topChunks.length,
+            searchMode: "semantic" as const,
+            similarities: topChunks.map(c => c.similarity),
+          };
+        }
+      }),
+
+    // Get embedding config
+    getConfig: protectedProcedure
+      .query(async () => {
+        const config = await getCurrentEmbeddingConfig();
+        const dbConfig = await getActiveEmbeddingConfig();
+        return {
+          provider: config.provider,
+          baseUrl: config.baseUrl,
+          model: config.model,
+          dimensions: config.dimensions,
+          hasApiKey: !!config.apiKey,
+          isConfigured: !!dbConfig,
+        };
+      }),
+
+    // Save embedding config
+    saveConfig: protectedProcedure
+      .input(z.object({
+        provider: z.string(),
+        baseUrl: z.string().optional(),
+        apiKey: z.string().optional(),
+        model: z.string().optional(),
+        dimensions: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const apiKeyEncrypted = input.apiKey ? encodeApiKey(input.apiKey) : undefined;
+        await upsertEmbeddingConfig({
+          provider: input.provider,
+          baseUrl: input.baseUrl || null,
+          apiKeyEncrypted: apiKeyEncrypted || null,
+          model: input.model || null,
+          dimensions: input.dimensions || null,
+        });
+        return { success: true };
       }),
   }),
 });

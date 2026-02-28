@@ -1,10 +1,10 @@
-# HANDOVER_CORTEX.md — Litch's Cortex V0.5.2 交接文档
+# HANDOVER_CORTEX.md — Litch's Cortex V0.6 交接文档
 
 ## 项目概述
 
 Litch's Cortex 是一个对话资产治理工具，用于管理 Litch 与多个 AI 进行深度对话产生的 PDF 记录。核心数据流为：**创建项目 → 上传 PDF → 解析分段 → LLM 提取话题标签 → 查看话题下的原文 → 按话题合并分段 → 生成总结**。
 
-V0.5 的核心变更是 **LLM Service 重构**：将硬编码的 LLM 调用抽象为可配置的多 Provider 服务层，支持 OpenAI、OpenRouter（Claude Opus 4.6 等）、自定义 Provider。V0.5.1 新增 LLM 调用自动重试机制、OpenRouter 模型列表自动获取（下拉搜索）、Skill 文件导入（.skill/.md）。V0.5.2 新增 **话题摘要对话式交互**：将单轮摘要生成改为多轮对话，支持多步骤 Skill 工作流（如 Phase 1 生成大纲 → 用户确认 → Phase 2 写初稿 → Phase 3 自检精炼）。
+V0.6 的核心变更是 **Embedding 向量搜索**：新增 `chunkEmbeddings` 和 `embeddingConfig` 表，创建独立的 Embedding Service（`server/embedding-service.ts`），支持为文档 chunks 生成 embedding 向量，并通过余弦相似度实现语义搜索。话题探索页新增"语义搜索"模式，分段预览页新增 embedding 状态和"生成向量"按钮，设置页新增 Embedding 配置 Card。
 
 ---
 
@@ -17,6 +17,7 @@ V0.5 的核心变更是 **LLM Service 重构**：将硬编码的 LLM 调用抽�
 | 数据库 | MySQL (TiDB) + Drizzle ORM | 托管在 Manus 平台 |
 | PDF 解析 | pdf-parse | 服务端解析 PDF 文本 |
 | LLM | **多 Provider 抽象层（V0.5）** | 支持内置 API / OpenAI / OpenRouter / 自定义 Provider |
+| Embedding | **Embedding Service（V0.6）** | 支持内置 / OpenAI / 自定义 Provider |
 | 认证 | 独立用户名密码 + JWT（V0.3） | 替代 Manus OAuth，支持独立部署 |
 | 密码哈希 | bcryptjs | 安全存储密码 |
 | 部署 | Manus 平台 | 一键部署 |
@@ -34,15 +35,55 @@ mergedChunks: id, topicId(V0.4.2), content, sourceChunkIds(JSON), position, crea
 topics: id, label, description, weight, createdAt
 chunk_topics: id, chunkId, topicId, relevanceScore
 summaries: id, topicId, summaryText, generatedAt
-llmConfig: id, provider, baseUrl, apiKeyEncrypted, defaultModel, taskModels(JSON), isActive, createdAt, updatedAt  ← V0.5 新增
-promptTemplates: id, name, description, systemPrompt, isPreset, createdAt, updatedAt  ← V0.5 新增
-topicConversations: id, topicId, projectId, title, messages(JSON), promptTemplateId, createdAt, updatedAt  ← V0.5.2 新增
+llmConfig: id, provider, baseUrl, apiKeyEncrypted, defaultModel, taskModels(JSON), isActive, createdAt, updatedAt  ← V0.5
+promptTemplates: id, name, description, systemPrompt, isPreset, createdAt, updatedAt  ← V0.5
+topicConversations: id, topicId, projectId, title, messages(JSON), promptTemplateId, createdAt, updatedAt  ← V0.5.2
+chunkEmbeddings: id, chunkId, embedding(LONGTEXT/JSON), model, dimensions, createdAt  ← V0.6 新增
+embeddingConfig: id, provider, baseUrl, apiKeyEncrypted, model, dimensions, isActive, createdAt, updatedAt  ← V0.6 新增
 users: id, openId, name, email, role, ... (Manus OAuth, 保留兼容)
 ```
 
-**V0.5.2 新增表说明：**
+**V0.6 新增表说明：**
 
-- `topicConversations`：存储话题对话上下文，`messages` 字段为 JSON 格式的消息数组（`[{role, content}, ...]`），支持 system/user/assistant 角色。`promptTemplateId` 记录启动对话时选择的 Prompt 模板。每个话题可有多个对话记录。
+- `chunkEmbeddings`：存储每个 chunk 的 embedding 向量。`embedding` 字段为 JSON 格式的 float 数组（如 1536 维），`model` 记录生成时使用的模型名称，`dimensions` 记录向量维度。通过 `chunkId` 关联到 `chunks` 表。
+- `embeddingConfig`：独立于 LLM 配置的 Embedding 服务配置。支持内置服务（`builtin`）、OpenAI（`openai`）、自定义 Provider（`custom`）。API key 使用 base64 编码存储。
+
+---
+
+## Embedding 向量搜索架构（V0.6 核心变更）
+
+### Embedding Service 设计
+
+```
+server/embedding-service.ts
+├── generateEmbedding(text, config?)     → 为单段文本生成 embedding 向量
+├── generateEmbeddings(texts, config?)   → 批量生成 embedding（自动分批，每批 20 条）
+├── cosineSimilarity(a, b)               → 计算两个向量的余弦相似度
+└── getEmbeddingConfig()                 → 从数据库读取 Embedding 配置
+```
+
+### Provider 支持
+
+| Provider | Base URL | Model | 说明 |
+|----------|----------|-------|------|
+| `builtin` | Manus 内置 API | `text-embedding-3-small` | 默认，无需配置 API key |
+| `openai` | `https://api.openai.com/v1` | `text-embedding-3-small` 等 | 标准 OpenAI Embedding API |
+| `custom` | 用户自定义 | 用户自定义 | 任何 OpenAI 兼容 Embedding API |
+
+### 语义搜索流程
+
+1. 用户在话题探索页输入搜索词
+2. 后端调用 `generateEmbedding()` 为搜索词生成 embedding
+3. 从数据库加载该项目所有 chunks 的 embedding
+4. 在应用层计算搜索词 embedding 与每个 chunk embedding 的余弦相似度
+5. 按相似度降序排列，返回 top-K 结果（默认 20 条）
+6. 前端展示搜索结果，包含相似度分数百分比
+
+### Fallback 机制
+
+- 如果项目没有生成 embedding，语义搜索自动回退到关键词搜索
+- 前端显示向量覆盖状态（如 "0/1097 (0%)"），提示用户先生成向量
+- 关键词搜索始终可用作备选
 
 ---
 
@@ -212,9 +253,11 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 - 拖拽或点击上传 PDF（支持多文件批量，单文件最大 100MB）
 - 使用 `multipart/form-data` + `fetch` 上传到 `/api/upload/pdf`
 
-### 5. 分段预览 (`/project/:id/chunks`)
+### 5. 分段预览 (`/project/:id/chunks`)（V0.6 增强）
 - Log 面板风格的分段列表
 - 「原始分段 / 合并分段」切换，合并分段按话题分组展示
+- **V0.6 新增**：Embedding 向量状态卡片（显示覆盖率百分比 + 进度条）
+- **V0.6 新增**：「生成向量」按钮，为项目所有 chunks 批量生成 embedding
 
 ### 6. 话题列表 (`/project/:id/topics`)
 - 三列网格布局展示话题
@@ -227,8 +270,11 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
   - **总结 Tab**：手动编辑摘要 + 保存（保留原有功能）
 - **V0.5**：Prompt 模板选择器从数据库加载模板
 
-### 8. 话题探索 (`/project/:id/explore`)
-- 用户输入关键词或问题
+### 8. 话题探索 (`/project/:id/explore`)（V0.6 重大改造）
+- **V0.6 新增**：双模式搜索切换（语义搜索 / 关键词搜索）
+- **V0.6 新增**：向量覆盖状态指示器（显示 embedding 生成进度）
+- **V0.6 新增**：语义搜索结果显示相似度分数百分比
+- **V0.6 新增**：无向量数据时自动回退到关键词搜索，并显示提示
 - **V0.5**：Prompt 模板选择器从数据库加载模板
 - 后端检索相关内容 → LLM 整理结构化话题总结
 
@@ -237,14 +283,18 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 - 显示所有用户列表（含初始密码）
 - admin 可创建/删除用户
 
-### 10. 设置页 (`/settings`)（V0.5 新增）
+### 10. 设置页 (`/settings`)（V0.5 新增，V0.6 增强）
 - **LLM Provider 配置**：选择 Provider（内置/OpenAI/OpenRouter/自定义）
 - **API Key 输入**：密码框 + 显示/隐藏切换
 - **Base URL 配置**：OpenRouter 自动填充，自定义可编辑
 - **默认模型选择**：输入框
 - **连接测试**：发送测试请求验证配置是否正确
 - **各任务类型模型配置**：高级选项，可折叠，为不同任务指定不同模型
-- **V0.5.1 模型下拉搜索**：OpenRouter 自动获取可用模型列表，支持关键词过滤（如输入 "claude" 显示所有 Claude 模型）
+- **V0.5.1 模型下拉搜索**：OpenRouter 自动获取可用模型列表，支持关键词过滤
+- **V0.6 新增**：Embedding 向量配置 Card（独立于 LLM 配置）
+  - 服务提供商选择（内置/OpenAI/自定义）
+  - Embedding 模型和向量维度配置
+  - API Key 和 Base URL 配置（非内置时显示）
 - **Prompt 模板管理入口**：链接到模板管理页
 
 ### 11. Prompt 模板管理 (`/settings/templates`)（V0.5 新增）
@@ -260,15 +310,16 @@ V0.4 的 Prompt 模板是纯前端功能（`localStorage`），V0.5 迁移到数
 ## 关键文件
 
 ```
-drizzle/schema.ts                      → 数据库表定义（含 llmConfig、promptTemplates、topicConversations 表）
+drizzle/schema.ts                      → 数据库表定义（含 chunkEmbeddings、embeddingConfig 表 V0.6）
+server/embedding-service.ts            → V0.6 Embedding Service（生成 embedding、余弦相似度计算）
 server/llm-service.ts                  → V0.5 LLM Service 抽象层（callLLM、Provider 配置）
-server/db.ts                           → 数据库查询层（含 LLM Config、Prompt Template、TopicConversation CRUD）
-server/routers.ts                      → tRPC 路由（含 llmSettings、promptTemplate、summary.chat routers）
+server/db.ts                           → 数据库查询层（含 Embedding CRUD V0.6）
+server/routers.ts                      → tRPC 路由（含 embedding router V0.6）
 server/uploadRoute.ts                  → PDF 上传 Express 路由
 server/authRoute.ts                    → 独立认证路由
 server/_core/context.ts                → tRPC 上下文（双认证模式）
 server/_core/llm.ts                    → Manus 内置 LLM 调用（作为 fallback）
-client/src/pages/Settings.tsx          → V0.5 设置页（LLM Provider 配置）
+client/src/pages/Settings.tsx          → V0.5 设置页（LLM Provider + Embedding 配置 V0.6）
 client/src/pages/PromptTemplateManager.tsx → V0.5 Prompt 模板管理页
 client/src/components/PromptTemplateSelector.tsx → Prompt 模板选择器（从 DB 加载）
 client/src/lib/promptTemplates.ts      → Prompt 模板配置（前端预设定义，作为 fallback）
@@ -278,16 +329,17 @@ client/src/pages/Login.tsx             → 登录页
 client/src/pages/ProjectList.tsx       → 项目列表首页（含全局导航栏）
 client/src/pages/ProjectWorkspace.tsx  → 项目工作区容器
 client/src/pages/Home.tsx              → PDF 上传页
-client/src/pages/Chunks.tsx            → 分段预览页
+client/src/pages/Chunks.tsx            → 分段预览页（V0.6 增加 embedding 状态 + 生成向量按钮）
 client/src/pages/Topics.tsx            → 话题列表页
 client/src/pages/TopicDetail.tsx       → Topic 详情页（V0.5.2 对话式交互）
-client/src/pages/Explore.tsx           → 话题探索页
+client/src/pages/Explore.tsx           → 话题探索页（V0.6 双模式搜索 + 相似度分数）
 client/src/pages/UserManagement.tsx    → 用户管理页
 client/src/lib/exportTopic.ts          → 话题导出工具函数
 client/src/index.css                   → 赛博认知深色主题
 server/cortex.test.ts                  → Vitest 单元测试（18 个测试）
 server/v04.test.ts                     → V0.4+V0.5+V0.5.1 测试（46 个测试）
 server/v052.test.ts                    → V0.5.2 对话功能测试（27 个测试）
+server/v06.test.ts                     → V0.6 Embedding 功能测试（20 个测试）
 server/auth.logout.test.ts             → 认证测试（1 个测试）
 ```
 
@@ -322,6 +374,12 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | `mergedChunk.byProject` | query | 获取项目所有合并分段（按话题分组） |
 | `mergedChunk.hasMerged` | query | 检查话题是否已有合并数据 |
 | `mergedChunk.mergeByTopic` | mutation | 按话题触发 LLM 语义合并 |
+| `embedding.generateForChunks` | mutation | **V0.6** 为指定 chunks 生成 embedding |
+| `embedding.generateForProject` | mutation | **V0.6** 批量为项目所有未生成 embedding 的 chunks 生成 |
+| `embedding.status` | query | **V0.6** 查询项目 embedding 生成状态（覆盖率） |
+| `embedding.semanticSearch` | mutation | **V0.6** 语义搜索（embedding 余弦相似度 + top-K） |
+| `embedding.getConfig` | query | **V0.6** 获取 Embedding 配置 |
+| `embedding.saveConfig` | mutation | **V0.6** 保存 Embedding 配置 |
 | `llmSettings.getConfig` | query | **V0.5** 获取 LLM 配置（不返回原始 key） |
 | `llmSettings.saveConfig` | mutation | **V0.5** 保存 LLM 配置 |
 | `llmSettings.getProviderDefaults` | query | **V0.5** 获取各 Provider 默认配置 |
@@ -362,20 +420,40 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | V0.4.2 | 2026-02-27 | Chunk 合并改为按话题维度、修复 Prompt 模板选择器点击 bug |
 | V0.5 | 2026-02-27 | LLM Service 多 Provider 抽象层、配置管理、设置页 UI、多 Prompt 模板管理（DB 迁移） |
 | V0.5.1 | 2026-02-27 | LLM 调用自动重试、OpenRouter 模型列表下拉搜索、Skill 文件导入（.skill/.md）、模板编辑增强 |
-| **V0.5.2** | **2026-02-27** | **话题摘要对话式交互：topicConversations 表、多轮对话 tRPC API、迷你聊天窗口、历史对话管理、Markdown 渲染** |
+| V0.5.2 | 2026-02-27 | 话题摘要对话式交互：topicConversations 表、多轮对话 tRPC API、迷你聊天窗口、历史对话管理、Markdown 渲染 |
+| **V0.6** | **2026-02-28** | **Embedding 向量搜索：chunkEmbeddings/embeddingConfig 表、Embedding Service、语义搜索（余弦相似度 top-K）、分段预览 embedding 状态、设置页 Embedding 配置** |
 
 ---
 
-## V0.6 可能的方向
+## 产品路线图
 
-1. **全文搜索增强**：使用 embedding 向量搜索替代关键词匹配
-2. **批量操作**：批量重新提取话题、批量生成摘要
-3. **可视化**：话题关系图谱、文档覆盖热力图
-4. **项目删除与文档管理**：删除项目、删除文档、文档在项目间移动
-5. **多格式支持**：支持 TXT、DOCX 等格式的文档上传
-6. **协作功能**：多用户共享项目、评论和标注
-7. **项目级 LLM 配置**：每个项目可覆盖全局 LLM 设置
-8. **对话导出**：将对话结果导出为 Markdown/PDF
+### 已完成
+- V0.1-V0.3: 基础功能（PDF上传、分段、话题提取、摘要生成、多用户）
+- V0.4: 自定义Prompt模板、Chunk合并优化、用户管理全局化、Admin增强
+- V0.5: LLM Service多Provider抽象层、OpenRouter支持、设置页UI
+- V0.5.1: 搜索重试机制、模型列表自动获取、Skill文件导入
+- V0.5.2: 对话式交互（多步Skill支持、迷你聊天窗口、对话持久化）
+- V0.6: Embedding向量搜索
+
+### 近期规划
+- V0.7: Docker化部署
+  - Dockerfile + docker-compose.yml
+  - 支持 Ollama 本地模型（embedding + LLM）
+  - 环境变量配置文档
+  - 一键 docker compose up 启动
+
+### 中期规划
+- V0.8: Conversation JSON 导入
+  - 支持 ChatGPT / Claude 对话导出文件
+  - 对话分段策略（按轮次/时间窗口）
+  - 本地大文件处理（Docker环境下运行）
+
+### 远期规划
+- V1.0: 团队内部署交付
+  - 部署文档 + 运维指南
+  - 团队多用户权限管理
+  - Prompt/Workflow 模板库
+  - 多模型路由策略（不同任务用不同模型）
 
 ---
 
@@ -409,17 +487,25 @@ pnpm start
 4. 核心代码集中在 `server/routers.ts`（后端）和 `client/src/pages/`（前端）
 5. 数据库 Schema 在 `drizzle/schema.ts`，修改后运行 `pnpm db:push`
 6. **V0.5 LLM 调用统一走 `server/llm-service.ts` 的 `callLLM` 函数**
-7. `callLLM` 自动从数据库读取 Provider 配置，fallback 到 Manus 内置 API
-8. 认证系统在 `server/authRoute.ts`，使用 JWT + bcryptjs
-9. 默认 admin 用户：username `litch`，初始密码 `cortex2026`
-10. Prompt 模板已从 localStorage 迁移到数据库（`promptTemplates` 表）
-11. 设置页在 `/settings`，模板管理在 `/settings/templates`
-12. API key 存储使用 base64 编码（`encodeApiKey` / `decodeApiKey`）
-13. 金瓶梅的原始 chunks 数据已保留，merged_chunks 是独立的新增层
-14. **V0.5.1** `callLLM` 内置自动重试（失败后等 1s，最多重试 2 次），解决 OpenRouter 冷启动超时问题
-15. **V0.5.1** 设置页模型选择改为下拉搜索框（OpenRouter 自动拉取模型列表，带缓存）
-16. **V0.5.1** 模板管理支持 .skill/.md 文件导入，模板编辑器增强（可拖拽、字符计数、内容预览）
-17. **V0.5.2** 话题详情页右侧改为双 Tab（对话 + 总结），对话 Tab 支持多轮 LLM 交互
-18. **V0.5.2** 对话上下文持久化在 `topicConversations` 表，支持历史对话列表切换和删除
-19. **V0.5.2** 对话启动时自动构建 system prompt（Prompt 模板）+ user 消息（chunks 内容）
-20. **V0.5.2** 测试文件 `server/v052.test.ts` 包含 27 个测试覆盖对话功能
+7. **V0.6 Embedding 调用走 `server/embedding-service.ts` 的 `generateEmbedding` / `generateEmbeddings` 函数**
+8. `callLLM` 自动从数据库读取 Provider 配置，fallback 到 Manus 内置 API
+9. Embedding Service 同样从数据库读取配置（`embeddingConfig` 表），fallback 到内置 API
+10. 认证系统在 `server/authRoute.ts`，使用 JWT + bcryptjs
+11. 默认 admin 用户：username `litch`，初始密码 `cortex2026`
+12. Prompt 模板已从 localStorage 迁移到数据库（`promptTemplates` 表）
+13. 设置页在 `/settings`，模板管理在 `/settings/templates`
+14. API key 存储使用 base64 编码（`encodeApiKey` / `decodeApiKey`）
+15. 金瓶梅的原始 chunks 数据已保留，merged_chunks 是独立的新增层
+16. **V0.5.1** `callLLM` 内置自动重试（失败后等 1s，最多重试 2 次），解决 OpenRouter 冷启动超时问题
+17. **V0.5.1** 设置页模型选择改为下拉搜索框（OpenRouter 自动拉取模型列表，带缓存）
+18. **V0.5.1** 模板管理支持 .skill/.md 文件导入，模板编辑器增强（可拖拽、字符计数、内容预览）
+19. **V0.5.2** 话题详情页右侧改为双 Tab（对话 + 总结），对话 Tab 支持多轮 LLM 交互
+20. **V0.5.2** 对话上下文持久化在 `topicConversations` 表，支持历史对话列表切换和删除
+21. **V0.5.2** 对话启动时自动构建 system prompt（Prompt 模板）+ user 消息（chunks 内容）
+22. **V0.5.2** 测试文件 `server/v052.test.ts` 包含 27 个测试覆盖对话功能
+23. **V0.6** Embedding 向量存储在 `chunkEmbeddings` 表，embedding 字段为 JSON float 数组
+24. **V0.6** 语义搜索在应用层计算余弦相似度（从 DB 加载所有项目 embeddings → Node.js 计算 → top-K 返回）
+25. **V0.6** 分段预览页顶部显示 embedding 覆盖率和"生成向量"按钮
+26. **V0.6** 话题探索页支持"语义搜索/关键词搜索"模式切换，无向量数据时自动回退
+27. **V0.6** 设置页新增 Embedding 配置 Card，独立于 LLM 配置
+28. **V0.6** 测试文件 `server/v06.test.ts` 包含 20 个测试（余弦相似度 + 路由认证 + 功能测试）

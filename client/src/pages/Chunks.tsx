@@ -3,8 +3,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { FileText, Hash, Loader2, Layers, GitMerge, Tags } from "lucide-react";
+import { FileText, Hash, Loader2, Layers, GitMerge, Tags, Zap, CheckCircle2, AlertCircle } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 
 type ViewMode = "original" | "merged";
 
@@ -19,6 +20,23 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
     projectId ? { projectId } : { projectId: 0 },
     { enabled: !!projectId }
   );
+
+  // Embedding status
+  const embeddingStatus = trpc.embedding.status.useQuery(
+    { projectId: projectId! },
+    { enabled: !!projectId }
+  );
+
+  // Generate embeddings mutation
+  const generateEmbeddings = trpc.embedding.generateForProject.useMutation({
+    onSuccess: (data) => {
+      toast.success(data.message);
+      embeddingStatus.refetch();
+    },
+    onError: (err) => {
+      toast.error(`向量生成失败: ${err.message}`, { duration: 6000 });
+    },
+  });
 
   if (isLoading) {
     return (
@@ -44,6 +62,9 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
     : {};
 
   const topicGroups = Object.values(mergedByTopic);
+
+  const embStatus = embeddingStatus.data;
+  const embPercentage = embStatus?.percentage ?? 0;
 
   return (
     <div className="space-y-4">
@@ -88,6 +109,94 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
           </Button>
         </div>
       </div>
+
+      {/* Embedding Status Card */}
+      {projectId && embStatus && (
+        <Card className="bg-card/80 border-border/40">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className={`h-9 w-9 rounded-lg flex items-center justify-center ${
+                  embPercentage === 100
+                    ? "bg-emerald-500/10"
+                    : embPercentage > 0
+                    ? "bg-amber-500/10"
+                    : "bg-muted/50"
+                }`}>
+                  {embPercentage === 100 ? (
+                    <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
+                  ) : embPercentage > 0 ? (
+                    <Zap className="h-4.5 w-4.5 text-amber-400" />
+                  ) : (
+                    <AlertCircle className="h-4.5 w-4.5 text-muted-foreground" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-foreground">Embedding 向量</span>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] ${
+                        embPercentage === 100
+                          ? "border-emerald-500/30 text-emerald-400"
+                          : embPercentage > 0
+                          ? "border-amber-500/30 text-amber-400"
+                          : "border-border text-muted-foreground"
+                      }`}
+                    >
+                      {embStatus.embeddedChunks}/{embStatus.totalChunks} ({embPercentage}%)
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {embPercentage === 100
+                      ? "所有分段已生成向量，语义搜索已就绪"
+                      : embPercentage > 0
+                      ? "部分分段已生成向量，可继续补充生成"
+                      : "尚未生成向量，点击按钮开始生成以启用语义搜索"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              <div className="flex items-center gap-3 shrink-0">
+                {embStatus.totalChunks > 0 && (
+                  <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        embPercentage === 100 ? "bg-emerald-400" : "bg-cyan-400"
+                      }`}
+                      style={{ width: `${embPercentage}%` }}
+                    />
+                  </div>
+                )}
+                <Button
+                  size="sm"
+                  className="gap-1.5 bg-cyan-600 hover:bg-cyan-500 text-white"
+                  disabled={generateEmbeddings.isPending || embPercentage === 100}
+                  onClick={() => generateEmbeddings.mutate({ projectId })}
+                >
+                  {generateEmbeddings.isPending ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      生成中...
+                    </>
+                  ) : embPercentage === 100 ? (
+                    <>
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      已完成
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="h-3.5 w-3.5" />
+                      生成向量
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Content */}
       {showMerged ? (
@@ -168,7 +277,7 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <ScrollArea className="h-[calc(100vh-280px)]">
+              <ScrollArea className="h-[calc(100vh-360px)]">
                 <div className="divide-y divide-border">
                   {chunks.map((item: any, idx: number) => (
                     <div

@@ -1,43 +1,74 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
-import { Search, Sparkles, Save, Loader2, FileText, ChevronDown, ChevronUp, Download, FileDown } from "lucide-react";
+import { Search, Sparkles, Save, Loader2, FileText, ChevronDown, ChevronUp, Download, FileDown, Zap, Type } from "lucide-react";
 import PromptTemplateSelector from "@/components/PromptTemplateSelector";
 import { exportAsMarkdown, exportAsPdf } from "@/lib/exportTopic";
+
+type SearchMode = "semantic" | "keyword";
+
+interface ExploreChunk {
+  id: number;
+  documentId: number;
+  content: string;
+  filename: string;
+  similarity?: number;
+}
 
 interface ExploreResult {
   title: string;
   summary: string;
-  chunks: Array<{
-    id: number;
-    documentId: number;
-    content: string;
-    filename: string;
-  }>;
+  chunks: ExploreChunk[];
   chunkCount: number;
+  searchMode?: string;
+  similarities?: number[];
 }
 
 export default function Explore({ projectId }: { projectId: number }) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<ExploreResult | null>(null);
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
-
   const [selectedPrompt, setSelectedPrompt] = useState<string | undefined>(undefined);
+  const [searchMode, setSearchMode] = useState<SearchMode>("semantic");
 
-  const searchMutation = trpc.explore.search.useMutation({
+  // Embedding status query
+  const embeddingStatus = trpc.embedding.status.useQuery(
+    { projectId },
+    { refetchInterval: false }
+  );
+
+  const hasEmbeddings = (embeddingStatus.data?.embeddedChunks ?? 0) > 0;
+
+  // Keyword search mutation (original)
+  const keywordSearchMutation = trpc.explore.search.useMutation({
     onSuccess: (data) => {
-      setResult(data as ExploreResult);
+      setResult({ ...data as ExploreResult, searchMode: "keyword" });
     },
     onError: (err) => {
-      // Show friendly error message instead of raw JSON
       const msg = err.message || "未知错误";
       if (msg.includes("LLM") || msg.includes("timeout") || msg.includes("API")) {
         toast.error(msg, { duration: 6000 });
       } else {
         toast.error(`探索失败，请稍后重试。${msg.length > 100 ? "" : " (" + msg + ")"}`, { duration: 5000 });
+      }
+    },
+  });
+
+  // Semantic search mutation
+  const semanticSearchMutation = trpc.embedding.semanticSearch.useMutation({
+    onSuccess: (data) => {
+      setResult(data as ExploreResult);
+    },
+    onError: (err) => {
+      const msg = err.message || "未知错误";
+      if (msg.includes("Embedding") || msg.includes("配置")) {
+        toast.error(msg, { duration: 6000 });
+      } else {
+        toast.error(`语义搜索失败: ${msg.length > 100 ? msg.substring(0, 100) + "..." : msg}`, { duration: 5000 });
       }
     },
   });
@@ -51,11 +82,26 @@ export default function Explore({ projectId }: { projectId: number }) {
     },
   });
 
+  const isPending = keywordSearchMutation.isPending || semanticSearchMutation.isPending;
+
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
     setResult(null);
-    searchMutation.mutate({ projectId, query: query.trim(), customPrompt: selectedPrompt });
+
+    if (searchMode === "semantic") {
+      semanticSearchMutation.mutate({
+        projectId,
+        query: query.trim(),
+        customPrompt: selectedPrompt,
+      });
+    } else {
+      keywordSearchMutation.mutate({
+        projectId,
+        query: query.trim(),
+        customPrompt: selectedPrompt,
+      });
+    }
   }
 
   function handleSave() {
@@ -101,6 +147,12 @@ export default function Explore({ projectId }: { projectId: number }) {
     });
   }
 
+  // Effective search mode — auto-fallback to keyword if no embeddings
+  const effectiveMode = useMemo(() => {
+    if (searchMode === "semantic" && !hasEmbeddings) return "keyword";
+    return searchMode;
+  }, [searchMode, hasEmbeddings]);
+
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
@@ -111,6 +163,48 @@ export default function Explore({ projectId }: { projectId: number }) {
       <p className="text-sm text-muted-foreground">
         输入关键词或问题，系统会从当前项目的文档中检索相关内容，并用 LLM 整理出结构化的话题总结。
       </p>
+
+      {/* Search Mode Toggle + Embedding Status */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center bg-secondary/50 rounded-md p-0.5">
+          <Button
+            variant={searchMode === "semantic" ? "default" : "ghost"}
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={() => setSearchMode("semantic")}
+          >
+            <Zap className="h-3.5 w-3.5" />
+            语义搜索
+          </Button>
+          <Button
+            variant={searchMode === "keyword" ? "default" : "ghost"}
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={() => setSearchMode("keyword")}
+          >
+            <Type className="h-3.5 w-3.5" />
+            关键词搜索
+          </Button>
+        </div>
+
+        {/* Embedding status indicator */}
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {embeddingStatus.data && (
+            <>
+              <div className={`h-2 w-2 rounded-full ${embeddingStatus.data.percentage === 100 ? "bg-emerald-400" : embeddingStatus.data.percentage > 0 ? "bg-amber-400" : "bg-red-400"}`} />
+              <span>
+                向量覆盖: {embeddingStatus.data.embeddedChunks}/{embeddingStatus.data.totalChunks}
+                ({embeddingStatus.data.percentage}%)
+              </span>
+            </>
+          )}
+          {searchMode === "semantic" && !hasEmbeddings && (
+            <Badge variant="outline" className="text-amber-400 border-amber-500/30 text-[10px]">
+              无向量数据，将回退到关键词搜索
+            </Badge>
+          )}
+        </div>
+      </div>
 
       {/* Search Form */}
       <form onSubmit={handleSearch} className="space-y-3">
@@ -127,24 +221,28 @@ export default function Explore({ projectId }: { projectId: number }) {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="输入关键词或问题，如「西门庆的经济活动」「潘金莲的命运」..."
+              placeholder={
+                effectiveMode === "semantic"
+                  ? "输入自然语言问题，如「西门庆的经济活动有哪些特点」..."
+                  : "输入关键词，如「西门庆」「经济活动」..."
+              }
               className="pl-10 bg-background border-border focus:border-cyan-500 focus:ring-cyan-500/20"
             />
           </div>
           <Button
             type="submit"
-            disabled={searchMutation.isPending || !query.trim()}
+            disabled={isPending || !query.trim()}
             className="bg-cyan-600 hover:bg-cyan-500 text-white px-6"
           >
-            {searchMutation.isPending ? (
+            {isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                探索中...
+                {effectiveMode === "semantic" ? "语义搜索中..." : "搜索中..."}
               </>
             ) : (
               <>
-                <Sparkles className="w-4 h-4 mr-2" />
-                探索
+                {effectiveMode === "semantic" ? <Zap className="w-4 h-4 mr-2" /> : <Search className="w-4 h-4 mr-2" />}
+                {effectiveMode === "semantic" ? "语义探索" : "关键词探索"}
               </>
             )}
           </Button>
@@ -154,6 +252,24 @@ export default function Explore({ projectId }: { projectId: number }) {
       {/* Results */}
       {result && (
         <div className="space-y-6">
+          {/* Search Mode Badge */}
+          {result.searchMode && (
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className={`text-xs ${
+                  result.searchMode === "semantic"
+                    ? "border-cyan-500/30 text-cyan-400"
+                    : result.searchMode === "keyword"
+                    ? "border-amber-500/30 text-amber-400"
+                    : "border-border text-muted-foreground"
+                }`}
+              >
+                {result.searchMode === "semantic" ? "🧠 语义搜索" : "🔤 关键词搜索"}
+              </Badge>
+            </div>
+          )}
+
           {/* Summary Card */}
           <div className="bg-card border border-cyan-500/20 rounded-xl p-6 shadow-lg shadow-cyan-500/5">
             <div className="flex items-start justify-between mb-4">
@@ -213,17 +329,34 @@ export default function Explore({ projectId }: { projectId: number }) {
                 const isExpanded = expandedChunks.has(chunk.id);
                 const preview = chunk.content.slice(0, 200);
                 const needsExpand = chunk.content.length > 200;
+                const similarity = chunk.similarity;
 
                 return (
                   <div
                     key={chunk.id}
                     className="bg-card border border-border rounded-lg p-4 hover:border-cyan-500/30 transition-colors"
                   >
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <span className="text-xs font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded">
                         #{idx + 1}
                       </span>
                       <span className="text-xs text-muted-foreground truncate">{chunk.filename}</span>
+                      {similarity !== undefined && similarity > 0 && (
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] font-mono ${
+                            similarity >= 0.8
+                              ? "border-emerald-500/40 text-emerald-400"
+                              : similarity >= 0.6
+                              ? "border-cyan-500/40 text-cyan-400"
+                              : similarity >= 0.4
+                              ? "border-amber-500/40 text-amber-400"
+                              : "border-border text-muted-foreground"
+                          }`}
+                        >
+                          相似度 {(similarity * 100).toFixed(1)}%
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed">
                       {isExpanded ? chunk.content : preview}
@@ -254,11 +387,15 @@ export default function Explore({ projectId }: { projectId: number }) {
       )}
 
       {/* Empty state */}
-      {!result && !searchMutation.isPending && (
+      {!result && !isPending && (
         <div className="text-center py-16 text-muted-foreground">
           <Sparkles className="w-12 h-12 mx-auto mb-4 opacity-30" />
           <p className="text-sm">输入关键词开始探索话题</p>
-          <p className="text-xs mt-1 opacity-70">系统会从文档中检索相关内容，并用 AI 整理成结构化总结</p>
+          <p className="text-xs mt-1 opacity-70">
+            {hasEmbeddings
+              ? "语义搜索已就绪，支持自然语言查询"
+              : "请先在分段预览页生成向量以启用语义搜索"}
+          </p>
         </div>
       )}
     </div>

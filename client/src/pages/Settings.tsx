@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, EyeOff, Save, Zap, ChevronDown, ChevronRight, Loader2, FileText, ArrowRight, Search, X } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, Save, Zap, ChevronDown, ChevronRight, Loader2, FileText, ArrowRight, Search, X, Brain } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
 const TASK_TYPES = [
@@ -170,7 +170,182 @@ function ModelCombobox({
   );
 }
 
-// ─── Main Settings Page ──────────────────────────────────────────────
+//// ─── Embedding Config Section ──────────────────────────────────────
+
+const EMBEDDING_PROVIDERS = [
+  { value: "builtin", label: "内置服务", desc: "使用平台内置 Embedding 服务" },
+  { value: "openai", label: "OpenAI", desc: "text-embedding-3-small / text-embedding-3-large" },
+  { value: "custom", label: "自定义", desc: "自定义 OpenAI 兼容 Embedding API" },
+];
+
+function EmbeddingConfigSection() {
+  const [embProvider, setEmbProvider] = useState("builtin");
+  const [embBaseUrl, setEmbBaseUrl] = useState("");
+  const [embApiKey, setEmbApiKey] = useState("");
+  const [embModel, setEmbModel] = useState("text-embedding-3-small");
+  const [embDimensions, setEmbDimensions] = useState(1536);
+  const [showEmbApiKey, setShowEmbApiKey] = useState(false);
+
+  const embConfigQuery = trpc.embedding.getConfig.useQuery();
+  const embSaveMutation = trpc.embedding.saveConfig.useMutation();
+
+  useEffect(() => {
+    if (embConfigQuery.data) {
+      setEmbProvider(embConfigQuery.data.provider);
+      setEmbBaseUrl(embConfigQuery.data.baseUrl || "");
+      setEmbModel(embConfigQuery.data.model || "text-embedding-3-small");
+      setEmbDimensions(embConfigQuery.data.dimensions || 1536);
+    }
+  }, [embConfigQuery.data]);
+
+  useEffect(() => {
+    if (embProvider === "openai") {
+      setEmbBaseUrl("https://api.openai.com/v1");
+      if (!embModel || embModel === "text-embedding-3-small") setEmbModel("text-embedding-3-small");
+    } else if (embProvider === "builtin") {
+      setEmbBaseUrl("");
+      setEmbModel("text-embedding-3-small");
+      setEmbDimensions(1536);
+    }
+  }, [embProvider]);
+
+  const handleEmbSave = async () => {
+    try {
+      await embSaveMutation.mutateAsync({
+        provider: embProvider,
+        baseUrl: embBaseUrl || undefined,
+        apiKey: embApiKey || undefined,
+        model: embModel || undefined,
+        dimensions: embDimensions || undefined,
+      });
+      toast.success("Embedding 配置已保存");
+      embConfigQuery.refetch();
+    } catch (err: any) {
+      toast.error(`保存失败: ${err.message}`);
+    }
+  };
+
+  const isEmbExternal = embProvider !== "builtin";
+
+  return (
+    <div className="space-y-4">
+      {/* Provider */}
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">服务提供商</Label>
+        <Select value={embProvider} onValueChange={setEmbProvider}>
+          <SelectTrigger className="bg-background/50">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EMBEDDING_PROVIDERS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                <div className="flex flex-col">
+                  <span>{opt.label}</span>
+                  <span className="text-xs text-muted-foreground">{opt.desc}</span>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {isEmbExternal && (
+        <>
+          {/* API Key */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">API Key</Label>
+            <div className="relative">
+              <Input
+                type={showEmbApiKey ? "text" : "password"}
+                value={embApiKey}
+                onChange={(e) => setEmbApiKey(e.target.value)}
+                placeholder={embConfigQuery.data?.hasApiKey ? "••••••••（已保存，留空保持不变）" : "输入 API Key..."}
+                className="bg-background/50 pr-10 font-mono text-sm"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                onClick={() => setShowEmbApiKey(!showEmbApiKey)}
+              >
+                {showEmbApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* Base URL */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Base URL</Label>
+            <Input
+              value={embBaseUrl}
+              onChange={(e) => setEmbBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              className="bg-background/50 font-mono text-sm"
+            />
+          </div>
+        </>
+      )}
+
+      {/* Model */}
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">Embedding 模型</Label>
+        <Input
+          value={embModel}
+          onChange={(e) => setEmbModel(e.target.value)}
+          placeholder="text-embedding-3-small"
+          className="bg-background/50 font-mono text-sm"
+          disabled={embProvider === "builtin"}
+        />
+        {embProvider === "builtin" && (
+          <p className="text-xs text-muted-foreground">内置服务使用 text-embedding-3-small</p>
+        )}
+      </div>
+
+      {/* Dimensions */}
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">向量维度</Label>
+        <Input
+          type="number"
+          value={embDimensions}
+          onChange={(e) => setEmbDimensions(parseInt(e.target.value) || 1536)}
+          placeholder="1536"
+          className="bg-background/50 font-mono text-sm w-32"
+          disabled={embProvider === "builtin"}
+        />
+        <p className="text-xs text-muted-foreground">
+          text-embedding-3-small 默认 1536 维，text-embedding-3-large 默认 3072 维
+        </p>
+      </div>
+
+      {/* Save */}
+      <div className="pt-2">
+        <Button onClick={handleEmbSave} disabled={embSaveMutation.isPending} className="gap-2">
+          {embSaveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          保存 Embedding 配置
+        </Button>
+      </div>
+
+      {/* Current status */}
+      {embConfigQuery.data && (
+        <div className="p-3 rounded-lg bg-muted/30 border border-border/30 text-xs text-muted-foreground">
+          <span>当前: </span>
+          <span className="font-mono">{embConfigQuery.data.provider}</span>
+          <span> / </span>
+          <span className="font-mono">{embConfigQuery.data.model}</span>
+          <span> / </span>
+          <span>{embConfigQuery.data.dimensions} 维</span>
+          <span> / API Key: </span>
+          <span className={embConfigQuery.data.hasApiKey ? "text-emerald-400" : "text-amber-400"}>
+            {embConfigQuery.data.hasApiKey ? "已配置" : embConfigQuery.data.provider === "builtin" ? "使用内置" : "未配置"}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Settings Page ────────────────────────────────────────────
 
 export default function Settings() {
   const [provider, setProvider] = useState("builtin");
@@ -505,6 +680,22 @@ export default function Settings() {
           </CardContent>
         </Card>
 
+        {/* Embedding Configuration */}
+        <Card className="border-border/40 bg-card/80">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Brain className="h-5 w-5 text-purple-400" />
+              Embedding 向量配置
+            </CardTitle>
+            <CardDescription>
+              配置用于语义搜索的 Embedding 模型。默认使用内置服务，也可配置 OpenAI 的 text-embedding-3-small 等模型。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <EmbeddingConfigSection />
+          </CardContent>
+        </Card>
+
         {/* Prompt Template Management */}
         <Card className="border-border/40 bg-card/80 cursor-pointer hover:border-cyan-500/30 transition-colors" onClick={() => setLocation("/settings/templates")}>
           <CardContent className="p-5">
@@ -554,7 +745,7 @@ export default function Settings() {
               </div>
               <div>
                 <span className="text-muted-foreground">版本：</span>
-                <span className="ml-2 font-mono text-xs">V0.5.1</span>
+                <span className="ml-2 font-mono text-xs">V0.6</span>
               </div>
             </div>
           </CardContent>

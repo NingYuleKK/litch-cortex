@@ -13,6 +13,8 @@ import {
   llmConfig, InsertLlmConfig, LlmConfig,
   promptTemplates, InsertPromptTemplate, PromptTemplate,
   topicConversations, InsertTopicConversation, TopicConversation,
+  chunkEmbeddings, InsertChunkEmbedding, ChunkEmbedding,
+  embeddingConfig, InsertEmbeddingConfig, EmbeddingConfig,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -628,6 +630,163 @@ export async function deleteTopicConversation(id: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(topicConversations).where(eq(topicConversations.id, id));
+}
+
+// ─── Chunk Embedding Helpers ──────────────────────────────────────
+
+export async function insertChunkEmbedding(data: {
+  chunkId: number;
+  embedding: string; // JSON string of float array
+  model: string;
+  dimensions: number;
+}): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  // Upsert: delete existing embedding for this chunk, then insert new one
+  await db.delete(chunkEmbeddings).where(eq(chunkEmbeddings.chunkId, data.chunkId));
+  const result = await db.insert(chunkEmbeddings).values({
+    chunkId: data.chunkId,
+    embedding: data.embedding,
+    model: data.model,
+    dimensions: data.dimensions,
+  });
+  return result[0].insertId;
+}
+
+export async function insertChunkEmbeddingsBatch(data: Array<{
+  chunkId: number;
+  embedding: string;
+  model: string;
+  dimensions: number;
+}>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (data.length === 0) return;
+  // Delete existing embeddings for these chunks
+  const chunkIds = data.map(d => d.chunkId);
+  await db.delete(chunkEmbeddings).where(inArray(chunkEmbeddings.chunkId, chunkIds));
+  // Insert in batches of 50 to avoid query size limits
+  for (let i = 0; i < data.length; i += 50) {
+    const batch = data.slice(i, i + 50);
+    await db.insert(chunkEmbeddings).values(batch);
+  }
+}
+
+export async function getEmbeddingsByChunkIds(chunkIds: number[]): Promise<ChunkEmbedding[]> {
+  const db = await getDb();
+  if (!db) return [];
+  if (chunkIds.length === 0) return [];
+  return db.select().from(chunkEmbeddings).where(inArray(chunkEmbeddings.chunkId, chunkIds));
+}
+
+export async function getEmbeddingsByProject(projectId: number): Promise<Array<ChunkEmbedding & { documentId: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunkEmbeddings.id,
+      chunkId: chunkEmbeddings.chunkId,
+      embedding: chunkEmbeddings.embedding,
+      model: chunkEmbeddings.model,
+      dimensions: chunkEmbeddings.dimensions,
+      createdAt: chunkEmbeddings.createdAt,
+      documentId: chunks.documentId,
+    })
+    .from(chunkEmbeddings)
+    .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(documents.projectId, projectId));
+}
+
+export async function getEmbeddingCountByProject(projectId: number): Promise<{ total: number; withEmbedding: number }> {
+  const db = await getDb();
+  if (!db) return { total: 0, withEmbedding: 0 };
+
+  const totalResult = await db
+    .select({ count: sql<number>`COUNT(*)`.as("count") })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(documents.projectId, projectId));
+
+  const embeddedResult = await db
+    .select({ count: sql<number>`COUNT(DISTINCT ${chunkEmbeddings.chunkId})`.as("count") })
+    .from(chunkEmbeddings)
+    .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .where(eq(documents.projectId, projectId));
+
+  return {
+    total: totalResult[0]?.count || 0,
+    withEmbedding: embeddedResult[0]?.count || 0,
+  };
+}
+
+export async function getChunksWithoutEmbedding(projectId: number): Promise<Array<{ id: number; content: string }>> {
+  const db = await getDb();
+  if (!db) return [];
+  // Get all chunk IDs in the project that don't have embeddings
+  const result = await db
+    .select({
+      id: chunks.id,
+      content: chunks.content,
+    })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(chunkEmbeddings, eq(chunks.id, chunkEmbeddings.chunkId))
+    .where(and(
+      eq(documents.projectId, projectId),
+      sql`${chunkEmbeddings.id} IS NULL`
+    ))
+    .orderBy(asc(chunks.id));
+  return result;
+}
+
+// ─── Embedding Config Helpers ─────────────────────────────────────
+
+export async function getActiveEmbeddingConfig(): Promise<EmbeddingConfig | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const results = await db.select().from(embeddingConfig).where(eq(embeddingConfig.isActive, 1)).limit(1);
+  return results[0] || null;
+}
+
+export async function upsertEmbeddingConfig(data: {
+  provider: string;
+  baseUrl?: string | null;
+  apiKeyEncrypted?: string | null;
+  model?: string | null;
+  dimensions?: number | null;
+}): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Deactivate all existing configs
+  await db.update(embeddingConfig).set({ isActive: 0 });
+
+  const existing = await db.select().from(embeddingConfig).limit(1);
+  if (existing.length > 0) {
+    await db.update(embeddingConfig)
+      .set({
+        provider: data.provider,
+        baseUrl: data.baseUrl ?? null,
+        apiKeyEncrypted: data.apiKeyEncrypted ?? null,
+        model: data.model ?? "text-embedding-3-small",
+        dimensions: data.dimensions ?? 1536,
+        isActive: 1,
+      })
+      .where(eq(embeddingConfig.id, existing[0].id));
+    return existing[0].id;
+  }
+
+  const result = await db.insert(embeddingConfig).values({
+    provider: data.provider,
+    baseUrl: data.baseUrl ?? null,
+    apiKeyEncrypted: data.apiKeyEncrypted ?? null,
+    model: data.model ?? "text-embedding-3-small",
+    dimensions: data.dimensions ?? 1536,
+    isActive: 1,
+  });
+  return Number(result[0].insertId);
 }
 
 export async function seedPresetTemplates(): Promise<void> {
