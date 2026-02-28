@@ -246,3 +246,11 @@
 - [x] 修复 embedding-service.ts：无配置时默认走内置 API（BUILT_IN_FORGE_API_KEY + BUILT_IN_FORGE_API_URL）
 - [x] 确认默认 Provider = builtin，默认模型 = text-embedding-3-small
 - [x] 推送 GitHub + 保存 checkpoint
+
+## V0.6.2 Embedding OpenRouter 支持
+
+- [x] 后端 embedding-service.ts 支持 provider: "openrouter"（baseUrl: https://openrouter.ai/api/v1）- [x] 后端 resolveEmbeddingConfig 支持复用 LLM API Key 逻辑Router API Key
+- [x] 前端 Settings.tsx Embedding Provider 列表加 OpenRouter 选项
+- [x] 选 OpenRouter 时显示 API Key 输入框，模型默认 openai/text-embedding-3-small
+- [x] 前端提示用户可复用 LLM 配置中的 OpenRouter Key（一键复用按钮）
+- [x] 测试验证 + Git 推送 + checkpoint 保存

@@ -173,35 +173,43 @@ function ModelCombobox({
 //// ─── Embedding Config Section ──────────────────────────────────────
 
 const EMBEDDING_PROVIDERS = [
-  { value: "builtin", label: "内置服务", desc: "使用平台内置 Embedding 服务" },
-  { value: "openai", label: "OpenAI", desc: "text-embedding-3-small / text-embedding-3-large" },
+  { value: "openrouter", label: "OpenRouter", desc: "openrouter.ai — 推荐，支持 openai/text-embedding-3-small" },
+  { value: "openai", label: "OpenAI", desc: "api.openai.com — text-embedding-3-small / large" },
+  { value: "builtin", label: "内置服务", desc: "平台内置 API（不支持 embedding，仅作 fallback）" },
   { value: "custom", label: "自定义", desc: "自定义 OpenAI 兼容 Embedding API" },
 ];
 
 function EmbeddingConfigSection() {
-  const [embProvider, setEmbProvider] = useState("builtin");
-  const [embBaseUrl, setEmbBaseUrl] = useState("");
+  const [embProvider, setEmbProvider] = useState("openrouter");
+  const [embBaseUrl, setEmbBaseUrl] = useState("https://openrouter.ai/api/v1");
   const [embApiKey, setEmbApiKey] = useState("");
-  const [embModel, setEmbModel] = useState("text-embedding-3-small");
+  const [embModel, setEmbModel] = useState("openai/text-embedding-3-small");
   const [embDimensions, setEmbDimensions] = useState(1536);
   const [showEmbApiKey, setShowEmbApiKey] = useState(false);
+  const [reusingLlmKey, setReusingLlmKey] = useState(false);
 
   const embConfigQuery = trpc.embedding.getConfig.useQuery();
   const embSaveMutation = trpc.embedding.saveConfig.useMutation();
 
   useEffect(() => {
     if (embConfigQuery.data) {
-      setEmbProvider(embConfigQuery.data.provider);
-      setEmbBaseUrl(embConfigQuery.data.baseUrl || "");
-      setEmbModel(embConfigQuery.data.model || "text-embedding-3-small");
+      // Use dbProvider (raw saved value) for form state, not resolved/fallback provider
+      const savedProvider = (embConfigQuery.data as any).dbProvider || embConfigQuery.data.provider || "openrouter";
+      setEmbProvider(savedProvider);
+      setEmbBaseUrl(embConfigQuery.data.baseUrl || (savedProvider === "openrouter" ? "https://openrouter.ai/api/v1" : ""));
+      setEmbModel(embConfigQuery.data.model || (savedProvider === "openrouter" ? "openai/text-embedding-3-small" : "text-embedding-3-small"));
       setEmbDimensions(embConfigQuery.data.dimensions || 1536);
     }
   }, [embConfigQuery.data]);
 
   useEffect(() => {
+    setReusingLlmKey(false);
     if (embProvider === "openai") {
       setEmbBaseUrl("https://api.openai.com/v1");
-      if (!embModel || embModel === "text-embedding-3-small") setEmbModel("text-embedding-3-small");
+      setEmbModel((m) => (m === "openai/text-embedding-3-small" ? "text-embedding-3-small" : m));
+    } else if (embProvider === "openrouter") {
+      setEmbBaseUrl("https://openrouter.ai/api/v1");
+      setEmbModel((m) => (m === "text-embedding-3-small" ? "openai/text-embedding-3-small" : m));
     } else if (embProvider === "builtin") {
       setEmbBaseUrl("");
       setEmbModel("text-embedding-3-small");
@@ -211,14 +219,18 @@ function EmbeddingConfigSection() {
 
   const handleEmbSave = async () => {
     try {
+      // If reusingLlmKey, save without apiKey so backend auto-reuses LLM OpenRouter key
+      const apiKeyToSend = reusingLlmKey ? undefined : (embApiKey || undefined);
       await embSaveMutation.mutateAsync({
         provider: embProvider,
         baseUrl: embBaseUrl || undefined,
-        apiKey: embApiKey || undefined,
+        apiKey: apiKeyToSend,
         model: embModel || undefined,
         dimensions: embDimensions || undefined,
       });
       toast.success("Embedding 配置已保存");
+      setEmbApiKey("");
+      setReusingLlmKey(false);
       embConfigQuery.refetch();
     } catch (err: any) {
       toast.error(`保存失败: ${err.message}`);
@@ -226,6 +238,7 @@ function EmbeddingConfigSection() {
   };
 
   const isEmbExternal = embProvider !== "builtin";
+  const llmHasOpenRouterKey = (embConfigQuery.data as any)?.llmHasOpenRouterKey;
 
   return (
     <div className="space-y-4">
@@ -254,24 +267,64 @@ function EmbeddingConfigSection() {
           {/* API Key */}
           <div className="space-y-2">
             <Label className="text-sm font-medium">API Key</Label>
-            <div className="relative">
-              <Input
-                type={showEmbApiKey ? "text" : "password"}
-                value={embApiKey}
-                onChange={(e) => setEmbApiKey(e.target.value)}
-                placeholder={embConfigQuery.data?.hasApiKey ? "••••••••（已保存，留空保持不变）" : "输入 API Key..."}
-                className="bg-background/50 pr-10 font-mono text-sm"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                onClick={() => setShowEmbApiKey(!showEmbApiKey)}
-              >
-                {showEmbApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              </Button>
-            </div>
+            {/* Reuse LLM OpenRouter key hint */}
+            {embProvider === "openrouter" && llmHasOpenRouterKey && !reusingLlmKey && !embApiKey && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-xs">
+                <span className="text-cyan-400">ℹ️ LLM 配置中已有 OpenRouter Key</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 px-2 text-xs text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 ml-auto"
+                  onClick={() => {
+                    setReusingLlmKey(true);
+                    toast.info("将复用 LLM 配置中的 OpenRouter Key，点保存即可生效");
+                  }}
+                >
+                  一键复用
+                </Button>
+              </div>
+            )}
+            {reusingLlmKey && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                <span className="text-emerald-400">✓ 将复用 LLM 配置中的 OpenRouter Key</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 px-2 text-xs text-muted-foreground hover:text-foreground ml-auto"
+                  onClick={() => setReusingLlmKey(false)}
+                >
+                  取消
+                </Button>
+              </div>
+            )}
+            {!reusingLlmKey && (
+              <div className="relative">
+                <Input
+                  type={showEmbApiKey ? "text" : "password"}
+                  value={embApiKey}
+                  onChange={(e) => setEmbApiKey(e.target.value)}
+                  placeholder={
+                    embConfigQuery.data?.hasApiKey
+                      ? "········（已保存，留空保持不变）"
+                      : embProvider === "openrouter" && llmHasOpenRouterKey
+                      ? "留空将自动复用 LLM 配置中的 OpenRouter Key"
+                      : "输入 API Key..."
+                  }
+                  className="bg-background/50 pr-10 font-mono text-sm"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                  onClick={() => setShowEmbApiKey(!showEmbApiKey)}
+                >
+                  {showEmbApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Base URL */}
@@ -280,7 +333,7 @@ function EmbeddingConfigSection() {
             <Input
               value={embBaseUrl}
               onChange={(e) => setEmbBaseUrl(e.target.value)}
-              placeholder="https://api.openai.com/v1"
+              placeholder={embProvider === "openrouter" ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1"}
               className="bg-background/50 font-mono text-sm"
             />
           </div>

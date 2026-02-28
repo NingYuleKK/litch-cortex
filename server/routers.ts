@@ -1382,6 +1382,9 @@ export const appRouter = router({
       .query(async () => {
         const config = await getCurrentEmbeddingConfig();
         const dbConfig = await getActiveEmbeddingConfig();
+        // Check if LLM config has an OpenRouter key that can be reused
+        const llmConfig = await getActiveLlmConfig();
+        const llmHasOpenRouterKey = !!(llmConfig?.provider === "openrouter" && llmConfig?.apiKeyEncrypted);
         return {
           provider: config.provider,
           baseUrl: config.baseUrl,
@@ -1389,6 +1392,9 @@ export const appRouter = router({
           dimensions: config.dimensions,
           hasApiKey: !!config.apiKey,
           isConfigured: !!dbConfig,
+          llmHasOpenRouterKey,
+          // Raw DB config provider (before fallback resolution)
+          dbProvider: dbConfig?.provider || null,
         };
       }),
 

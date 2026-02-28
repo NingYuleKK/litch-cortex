@@ -1,13 +1,13 @@
 /**
- * Embedding Service — V0.6.1
+ * Embedding Service — V0.6.2
  *
  * Provides embedding generation for semantic search.
- * Supports built-in Manus API (default), OpenAI, and custom providers.
+ * Supports built-in Manus API, OpenAI, OpenRouter, and custom providers.
  * Configuration is read from the embedding_config database table.
- * Falls back to built-in API (BUILT_IN_FORGE_API_KEY) when no config is set.
+ * Priority: DB config > LLM config OpenRouter key > built-in API fallback.
  */
 import { ENV } from "./_core/env";
-import { getActiveEmbeddingConfig } from "./db";
+import { getActiveEmbeddingConfig, getActiveLlmConfig } from "./db";
 import { decodeApiKey } from "./llm-service";
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -27,6 +27,15 @@ export interface EmbeddingResult {
   usage?: { prompt_tokens: number; total_tokens: number };
 }
 
+// ─── Provider Defaults ─────────────────────────────────────────────
+
+const EMBEDDING_PROVIDER_DEFAULTS: Record<string, { baseUrl: string; defaultModel: string }> = {
+  builtin: { baseUrl: "", defaultModel: "text-embedding-3-small" },
+  openai: { baseUrl: "https://api.openai.com/v1", defaultModel: "text-embedding-3-small" },
+  openrouter: { baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/text-embedding-3-small" },
+  custom: { baseUrl: "", defaultModel: "text-embedding-3-small" },
+};
+
 // ─── Config Resolution ─────────────────────────────────────────────
 
 function getBuiltinConfig(): EmbeddingServiceConfig {
@@ -39,6 +48,22 @@ function getBuiltinConfig(): EmbeddingServiceConfig {
     model: "text-embedding-3-small",
     dimensions: 1536,
   };
+}
+
+/**
+ * Try to get the OpenRouter API key from the LLM config.
+ * Returns empty string if LLM config is not OpenRouter or has no key.
+ */
+async function getLlmOpenRouterKey(): Promise<string> {
+  try {
+    const llmConfig = await getActiveLlmConfig();
+    if (llmConfig && llmConfig.provider === "openrouter" && llmConfig.apiKeyEncrypted) {
+      return decodeApiKey(llmConfig.apiKeyEncrypted);
+    }
+  } catch {
+    // ignore
+  }
+  return "";
 }
 
 async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
@@ -62,24 +87,43 @@ async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
         apiKey = decodeApiKey(dbConfig.apiKeyEncrypted);
       }
 
-      // If no API key configured for external provider, fall back to built-in
+      // If no API key configured for external provider:
+      // Try to reuse LLM OpenRouter key if provider is openrouter
+      if (!apiKey && provider === "openrouter") {
+        apiKey = await getLlmOpenRouterKey();
+      }
+
+      // Still no key → fall back to built-in
       if (!apiKey) {
         return getBuiltinConfig();
       }
 
+      const defaults = EMBEDDING_PROVIDER_DEFAULTS[provider] || EMBEDDING_PROVIDER_DEFAULTS.custom;
       return {
         provider,
-        baseUrl: dbConfig.baseUrl || "https://api.openai.com/v1",
+        baseUrl: dbConfig.baseUrl || defaults.baseUrl,
         apiKey,
-        model: dbConfig.model || "text-embedding-3-small",
+        model: dbConfig.model || defaults.defaultModel,
         dimensions: dbConfig.dimensions || 1536,
       };
     }
   } catch {
-    // DB not available, fall through to built-in
+    // DB not available, fall through
   }
 
-  // Default: use built-in Manus API (no user configuration required)
+  // No embedding config: try to auto-use LLM OpenRouter key if available
+  const openRouterKey = await getLlmOpenRouterKey();
+  if (openRouterKey) {
+    return {
+      provider: "openrouter",
+      baseUrl: EMBEDDING_PROVIDER_DEFAULTS.openrouter.baseUrl,
+      apiKey: openRouterKey,
+      model: EMBEDDING_PROVIDER_DEFAULTS.openrouter.defaultModel,
+      dimensions: 1536,
+    };
+  }
+
+  // Final fallback: built-in Manus API
   return getBuiltinConfig();
 }
 
