@@ -237,5 +237,5 @@
 
 ### 交付
 - [x] 更新 Vitest 测试（112 个测试全部通过）
-- [ ] 更新 HANDOVER_CORTEX.md（含完整路线图）
-- [ ] 推送 GitHub 并保存 checkpoint
+- [x] 更新 HANDOVER_CORTEX.md（含完整路线图）
+- [x] 推送 GitHub 并保存 checkpoint
