@@ -239,3 +239,10 @@
 - [x] 更新 Vitest 测试（112 个测试全部通过）
 - [x] 更新 HANDOVER_CORTEX.md（含完整路线图）
 - [x] 推送 GitHub 并保存 checkpoint
+
+## V0.6.1 Embedding 内置服务默认配置修复
+
+- [x] 排查内置 API（BUILT_IN_FORGE_API_URL）是否支持 embedding endpoint
+- [x] 修复 embedding-service.ts：无配置时默认走内置 API（BUILT_IN_FORGE_API_KEY + BUILT_IN_FORGE_API_URL）
+- [x] 确认默认 Provider = builtin，默认模型 = text-embedding-3-small
+- [x] 推送 GitHub + 保存 checkpoint

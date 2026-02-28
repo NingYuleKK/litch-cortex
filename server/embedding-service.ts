@@ -1,9 +1,10 @@
 /**
- * Embedding Service — V0.6
- * 
+ * Embedding Service — V0.6.1
+ *
  * Provides embedding generation for semantic search.
- * Supports OpenAI embedding API (text-embedding-3-small) and custom providers.
+ * Supports built-in Manus API (default), OpenAI, and custom providers.
  * Configuration is read from the embedding_config database table.
+ * Falls back to built-in API (BUILT_IN_FORGE_API_KEY) when no config is set.
  */
 import { ENV } from "./_core/env";
 import { getActiveEmbeddingConfig } from "./db";
@@ -28,28 +29,7 @@ export interface EmbeddingResult {
 
 // ─── Config Resolution ─────────────────────────────────────────────
 
-async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
-  try {
-    const dbConfig = await getActiveEmbeddingConfig();
-    if (dbConfig) {
-      let apiKey = "";
-      if (dbConfig.apiKeyEncrypted) {
-        apiKey = decodeApiKey(dbConfig.apiKeyEncrypted);
-      }
-      return {
-        provider: dbConfig.provider || "openai",
-        baseUrl: dbConfig.baseUrl || "https://api.openai.com/v1",
-        apiKey,
-        model: dbConfig.model || "text-embedding-3-small",
-        dimensions: dbConfig.dimensions || 1536,
-      };
-    }
-  } catch {
-    // DB not available, fall through
-  }
-
-  // Fallback: try to use the LLM config's API key with OpenAI embedding
-  // Or use built-in forge API
+function getBuiltinConfig(): EmbeddingServiceConfig {
   return {
     provider: "builtin",
     baseUrl: ENV.forgeApiUrl
@@ -61,6 +41,48 @@ async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
   };
 }
 
+async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
+  try {
+    const dbConfig = await getActiveEmbeddingConfig();
+    if (dbConfig) {
+      const provider = dbConfig.provider || "builtin";
+
+      // If provider is builtin, always use built-in API credentials
+      if (provider === "builtin") {
+        return {
+          ...getBuiltinConfig(),
+          model: dbConfig.model || "text-embedding-3-small",
+          dimensions: dbConfig.dimensions || 1536,
+        };
+      }
+
+      // For external providers, decode the stored API key
+      let apiKey = "";
+      if (dbConfig.apiKeyEncrypted) {
+        apiKey = decodeApiKey(dbConfig.apiKeyEncrypted);
+      }
+
+      // If no API key configured for external provider, fall back to built-in
+      if (!apiKey) {
+        return getBuiltinConfig();
+      }
+
+      return {
+        provider,
+        baseUrl: dbConfig.baseUrl || "https://api.openai.com/v1",
+        apiKey,
+        model: dbConfig.model || "text-embedding-3-small",
+        dimensions: dbConfig.dimensions || 1536,
+      };
+    }
+  } catch {
+    // DB not available, fall through to built-in
+  }
+
+  // Default: use built-in Manus API (no user configuration required)
+  return getBuiltinConfig();
+}
+
 // ─── Embedding Generation ──────────────────────────────────────────
 
 /**
@@ -69,9 +91,10 @@ async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
 export async function generateEmbedding(text: string): Promise<EmbeddingResult> {
   const config = await resolveEmbeddingConfig();
 
+  // Built-in API always has a key injected from ENV; only throw if truly empty
   if (!config.apiKey) {
     throw new Error(
-      "Embedding API key not configured. Please configure it in Settings > Embedding Configuration."
+      "Embedding service is not available. The built-in API key is missing from the environment."
     );
   }
 
@@ -129,9 +152,10 @@ export async function generateEmbeddingsBatch(
 ): Promise<EmbeddingResult[]> {
   const config = await resolveEmbeddingConfig();
 
+  // Built-in API always has a key injected from ENV; only throw if truly empty
   if (!config.apiKey) {
     throw new Error(
-      "Embedding API key not configured. Please configure it in Settings > Embedding Configuration."
+      "Embedding service is not available. The built-in API key is missing from the environment."
     );
   }
 

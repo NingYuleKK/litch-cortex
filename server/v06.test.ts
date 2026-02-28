@@ -167,19 +167,27 @@ describe("embedding router - functional", () => {
   it("should save embedding config", async () => {
     const ctx = createCortexAuthContext();
     const trpc = caller(ctx);
+
+    // Save builtin config (no apiKey needed)
     const result = await trpc.embedding.saveConfig({
-      provider: "openai",
-      baseUrl: "https://api.openai.com/v1",
+      provider: "builtin",
       model: "text-embedding-3-small",
       dimensions: 1536,
     });
     expect(result.success).toBe(true);
 
-    // Verify config was saved
+    // Verify builtin config is returned correctly
     const config = await trpc.embedding.getConfig();
-    expect(config.provider).toBe("openai");
+    expect(config.provider).toBe("builtin");
     expect(config.model).toBe("text-embedding-3-small");
     expect(config.dimensions).toBe(1536);
+
+    // V0.6.1 behavior: external provider without apiKey falls back to builtin
+    // This is by design — users without API keys should still be able to use embedding
+    await trpc.embedding.saveConfig({ provider: "openai", model: "text-embedding-3-small" });
+    const fallbackConfig = await trpc.embedding.getConfig();
+    // No apiKey for openai → resolveEmbeddingConfig returns builtin as fallback
+    expect(fallbackConfig.provider).toBe("builtin");
 
     // Reset to builtin
     await trpc.embedding.saveConfig({ provider: "builtin" });
