@@ -422,6 +422,7 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | V0.5.1 | 2026-02-27 | LLM 调用自动重试、OpenRouter 模型列表下拉搜索、Skill 文件导入（.skill/.md）、模板编辑增强 |
 | V0.5.2 | 2026-02-27 | 话题摘要对话式交互：topicConversations 表、多轮对话 tRPC API、迷你聊天窗口、历史对话管理、Markdown 渲染 |
 | **V0.6** | **2026-02-28** | **Embedding 向量搜索：chunkEmbeddings/embeddingConfig 表、Embedding Service、语义搜索（余弦相似度 top-K）、分段预览 embedding 状态、设置页 Embedding 配置** |
+| **V0.7** | **2026-03-05** | **Docker 化部署：Dockerfile（多阶段构建）、docker-compose.yml（MySQL 8.0）、本地磁盘存储、独立 LLM/Embedding 配置必填、seedDefaultAdmin 改用 crypto.randomBytes、initialPassword 停写明文；本地全链路测试通过** |
 
 ---
 
@@ -436,14 +437,10 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 - V0.6: Embedding向量搜索
 
 ### 近期规划
-- V0.7: Docker化部署
-  - Dockerfile + docker-compose.yml
-  - 支持 Ollama 本地模型（embedding + LLM）
-  - 环境变量配置文档
-  - 一键 docker compose up 启动
+- **V0.7: Docker化部署 ✅ 已完成（2026-03-05）**
 
 ### 中期规划
-- V0.8: Conversation JSON 导入
+- V0.8: Conversation JSON 导入（feature/v0.8-json-import，待开发）
   - 支持 ChatGPT / Claude 对话导出文件
   - 对话分段策略（按轮次/时间窗口）
   - 本地大文件处理（Docker环境下运行）
@@ -475,7 +472,9 @@ pnpm build
 pnpm start
 ```
 
-**部署方式：** Manus 平台内置部署，通过 Management UI 的 Publish 按钮一键发布。
+**部署方式：**
+- **Manus 平台**：通过 Management UI 的 Publish 按钮一键发布（默认 DEPLOY_MODE=manus）
+- **Docker（V0.7）**：`cp .env.example .env` → 填写必填项 → `docker compose up -d`，详见 `docs/docker-deploy.md`
 
 ---
 
@@ -491,7 +490,7 @@ pnpm start
 8. `callLLM` 自动从数据库读取 Provider 配置，fallback 到 Manus 内置 API
 9. Embedding Service 同样从数据库读取配置（`embeddingConfig` 表），fallback 到内置 API
 10. 认证系统在 `server/authRoute.ts`，使用 JWT + bcryptjs
-11. 默认 admin 用户：username `litch`，初始密码 `cortex2026`
+11. 默认 admin 用户：username `litch`，初始密码通过 `DEFAULT_ADMIN_PASSWORD` 环境变量设置，或启动时随机生成打印到日志（V0.7）
 12. Prompt 模板已从 localStorage 迁移到数据库（`promptTemplates` 表）
 13. 设置页在 `/settings`，模板管理在 `/settings/templates`
 14. API key 存储使用 base64 编码（`encodeApiKey` / `decodeApiKey`）
