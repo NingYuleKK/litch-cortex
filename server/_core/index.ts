@@ -10,6 +10,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import uploadRouter from "../uploadRoute";
 import authRouter, { seedDefaultAdmin } from "../authRoute";
+import { ENV } from "./env";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -44,6 +45,10 @@ async function startServer() {
   app.use(authRouter);
   // PDF upload route (multipart/form-data, bypasses tRPC JSON size limits)
   app.use(uploadRouter);
+  // Docker mode: serve uploaded files from local disk
+  if (ENV.deployMode === "docker") {
+    app.use("/uploads", express.static(ENV.uploadDir));
+  }
   // tRPC API
   app.use(
     "/api/trpc",

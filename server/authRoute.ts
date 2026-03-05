@@ -62,21 +62,38 @@ export async function seedDefaultAdmin() {
   const db = await getDb();
   if (!db) return;
 
-  const existing = await db.select().from(cortexUsers).where(eq(cortexUsers.username, "litch")).limit(1);
+  const adminUsername = process.env.DEFAULT_ADMIN_USER || "litch";
+  const existing = await db.select().from(cortexUsers).where(eq(cortexUsers.username, adminUsername)).limit(1);
   if (existing.length > 0) {
-    console.log("[Auth] Default admin user 'litch' already exists");
+    console.log(`[Auth] Default admin user '${adminUsername}' already exists`);
     return;
   }
 
-  const hash = await bcrypt.hash("cortex2026", 10);
+  // Use password from env var, or generate a random one on first boot
+  let adminPassword = process.env.DEFAULT_ADMIN_PASSWORD;
+  let passwordSource: string;
+  if (adminPassword) {
+    passwordSource = "from DEFAULT_ADMIN_PASSWORD env var";
+  } else {
+    // Generate cryptographically secure random 16-char hex password
+    adminPassword = require("crypto").randomBytes(8).toString("hex");
+    passwordSource = "auto-generated (printed once below)";
+  }
+
+  const hash = await bcrypt.hash(adminPassword, 10);
   await db.insert(cortexUsers).values({
-    username: "litch",
+    username: adminUsername,
     passwordHash: hash,
     displayName: "Litch",
     role: "admin",
-    initialPassword: "cortex2026",
+    initialPassword: null, // Never store plaintext password
   });
-  console.log("[Auth] Created default admin user 'litch'");
+
+  console.log(`[Auth] Created default admin user '${adminUsername}' (${passwordSource})`);
+  if (!process.env.DEFAULT_ADMIN_PASSWORD) {
+    console.log(`[Auth] ⚠️  Initial password: ${adminPassword}`);
+    console.log("[Auth] ⚠️  Please change this password immediately after first login.");
+  }
 }
 
 // ─── Cookie options ────────────────────────────────────────────────
@@ -174,7 +191,7 @@ authRouter.post("/api/cortex-auth/register", async (req: Request, res: Response)
       passwordHash: hash,
       displayName: displayName || username,
       role: role === "admin" ? "admin" : "member",
-      initialPassword: password, // Store initial password in plaintext for admin reference
+      initialPassword: null, // Do not store plaintext password
     });
 
     res.json({

@@ -150,7 +150,13 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
+const isDockerMode = process.env.DEPLOY_MODE === "docker";
+const plugins = [
+  react(),
+  tailwindcss(),
+  jsxLocPlugin(),
+  ...(isDockerMode ? [] : [vitePluginManusRuntime(), vitePluginManusDebugCollector()]),
+];
 
 export default defineConfig({
   plugins,

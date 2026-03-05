@@ -1,6 +1,10 @@
 // Preconfigured storage helpers for Manus WebDev templates
 // Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
+// Docker mode: uses local disk storage instead of S3.
 
+import fs from "fs";
+import path from "path";
+import { nanoid } from "nanoid";
 import { ENV } from './_core/env';
 
 type StorageConfig = { baseUrl: string; apiKey: string };
@@ -72,6 +76,18 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
+  // Docker mode: save to local disk
+  if (ENV.deployMode === "docker") {
+    const uploadDir = ENV.uploadDir;
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const ext = path.extname(relKey) || "";
+    const fileName = `${nanoid()}${ext}`;
+    const filePath = path.join(uploadDir, fileName);
+    fs.writeFileSync(filePath, data as Buffer);
+    return { key: fileName, url: `/uploads/${fileName}` };
+  }
+
+  // Manus mode: S3 via storage proxy
   const { baseUrl, apiKey } = getStorageConfig();
   const key = normalizeKey(relKey);
   const uploadUrl = buildUploadUrl(baseUrl, key);
@@ -93,6 +109,13 @@ export async function storagePut(
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
+  // Docker mode: return local URL directly
+  if (ENV.deployMode === "docker") {
+    const fileName = path.basename(relKey);
+    return { key: fileName, url: `/uploads/${fileName}` };
+  }
+
+  // Manus mode: S3 signed URL
   const { baseUrl, apiKey } = getStorageConfig();
   const key = normalizeKey(relKey);
   return {
