@@ -28,6 +28,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required. Set it in your .env file.}
       UPLOAD_DIR: /app/data/uploads
       PORT: 3000
+      DEFAULT_ADMIN_USER: ${DEFAULT_ADMIN_USER:-litch}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
     volumes:
       - uploads:/app/data/uploads
     depends_on:
