@@ -75,8 +75,8 @@ export async function seedDefaultAdmin() {
   if (adminPassword) {
     passwordSource = "from DEFAULT_ADMIN_PASSWORD env var";
   } else {
-    // Generate random 16-char password
-    adminPassword = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+    // Generate cryptographically secure random 16-char hex password
+    adminPassword = require("crypto").randomBytes(8).toString("hex");
     passwordSource = "auto-generated (printed once below)";
   }
 
@@ -191,7 +191,7 @@ authRouter.post("/api/cortex-auth/register", async (req: Request, res: Response)
       passwordHash: hash,
       displayName: displayName || username,
       role: role === "admin" ? "admin" : "member",
-      initialPassword: password, // Store initial password in plaintext for admin reference
+      initialPassword: null, // Do not store plaintext password
     });
 
     res.json({
