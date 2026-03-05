@@ -12,6 +12,7 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
+import { randomBytes } from "crypto";
 import { getDb } from "./db";
 import { cortexUsers, CortexUser, projects, documents, chunks, chunkTopics, summaries, topics } from "../drizzle/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
@@ -76,7 +77,7 @@ export async function seedDefaultAdmin() {
     passwordSource = "from DEFAULT_ADMIN_PASSWORD env var";
   } else {
     // Generate cryptographically secure random 16-char hex password
-    adminPassword = require("crypto").randomBytes(8).toString("hex");
+    adminPassword = randomBytes(8).toString("hex");
     passwordSource = "auto-generated (printed once below)";
   }
 
