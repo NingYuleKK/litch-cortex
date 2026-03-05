@@ -123,6 +123,13 @@ async function resolveEmbeddingConfig(): Promise<EmbeddingServiceConfig> {
     };
   }
 
+  // Docker mode: no builtin API available — require user configuration
+  if (ENV.deployMode === "docker") {
+    throw new Error(
+      "Embedding 未配置。请在设置页（Settings > Embedding 配置）选择 Provider 并填入 API Key。"
+    );
+  }
+
   // Final fallback: built-in Manus API
   return getBuiltinConfig();
 }

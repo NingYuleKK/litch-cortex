@@ -91,10 +91,17 @@ async function resolveConfig(): Promise<LlmServiceConfig> {
       };
     }
   } catch {
-    // DB not available, fall through to ENV fallback
+    // DB not available, fall through to fallback
   }
 
-  // Fallback: use built-in Forge
+  // Docker mode: no builtin API available — require user configuration
+  if (ENV.deployMode === "docker") {
+    throw new Error(
+      "LLM 未配置。请在设置页（Settings > LLM 配置）选择 Provider 并填入 API Key。"
+    );
+  }
+
+  // Manus mode: fallback to built-in Forge
   return {
     provider: "builtin",
     baseUrl: "",
@@ -252,6 +259,11 @@ export async function callLLM(params: CortexLlmParams): Promise<InvokeResult> {
     try {
       // If using built-in provider, delegate to the original invokeLLM
       if (config.provider === "builtin") {
+        if (ENV.deployMode === "docker") {
+          throw new Error(
+            "Manus 内置 API 在 Docker 模式下不可用。请在设置页配置 LLM Provider。"
+          );
+        }
         return await builtinInvokeLLM(params);
       }
 

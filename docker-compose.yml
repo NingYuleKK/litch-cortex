@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-cortex_root_secret}
+      MYSQL_DATABASE: cortex
+      MYSQL_USER: cortex
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-cortex_secret}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-cortex_root_secret}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  app:
+    build: .
+    restart: always
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      DEPLOY_MODE: docker
+      DATABASE_URL: mysql://cortex:${MYSQL_PASSWORD:-cortex_secret}@db:3306/cortex
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required. Set it in your .env file.}
+      UPLOAD_DIR: /app/data/uploads
+      PORT: 3000
+    volumes:
+      - uploads:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  uploads:
