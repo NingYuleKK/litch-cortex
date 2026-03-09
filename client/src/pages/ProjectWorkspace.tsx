@@ -26,6 +26,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   Upload, FileText, Tags, Brain, LogOut, PanelLeft,
   ChevronLeft, FolderOpen, Loader2, Sparkles, Shield, KeyRound,
+  MessageSquare,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState, useMemo } from "react";
 import { useLocation, useParams } from "wouter";
@@ -36,6 +37,7 @@ import ChunksPage from "./Chunks";
 import TopicsPage from "./Topics";
 import TopicDetailPage from "./TopicDetail";
 import ExplorePage from "./Explore";
+import ConversationsPage from "./Conversations";
 import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -115,6 +117,7 @@ function WorkspaceContent({
     if (tab === "chunks") return "chunks";
     if (tab === "topics") return "topics";
     if (tab === "explore") return "explore";
+    if (tab === "conversations") return "conversations";
     return "upload";
   }, [tab, location]);
 
@@ -123,6 +126,7 @@ function WorkspaceContent({
     { icon: FileText, label: "分段预览", key: "chunks", path: `/project/${projectId}/chunks` },
     { icon: Tags, label: "话题列表", key: "topics", path: `/project/${projectId}/topics` },
     { icon: Sparkles, label: "话题探索", key: "explore", path: `/project/${projectId}/explore` },
+    { icon: MessageSquare, label: "对话导入", key: "conversations", path: `/project/${projectId}/conversations` },
   ];
 
   const activeMenuItem = menuItems.find(item => item.key === activeTab) || menuItems[0];
@@ -314,6 +318,7 @@ function WorkspaceContent({
           {activeTab === "chunks" && <ChunksPage projectId={projectId} />}
           {activeTab === "topics" && <TopicsPage projectId={projectId} />}
           {activeTab === "explore" && <ExplorePage projectId={projectId} />}
+          {activeTab === "conversations" && <ConversationsPage projectId={projectId} />}
           {activeTab === "topic-detail" && topicIdFromUrl && (
             <TopicDetailPage projectId={projectId} topicId={topicIdFromUrl} />
           )}

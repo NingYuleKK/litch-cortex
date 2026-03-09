@@ -1,0 +1,219 @@
+[
+  {
+    "title": "测试对话：简单问答",
+    "create_time": 1770110380.527394,
+    "update_time": 1770111259.777071,
+    "conversation_id": "test-conv-001",
+    "current_node": "node-a4",
+    "default_model_slug": "gpt-4o",
+    "mapping": {
+      "node-root": {
+        "id": "node-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-sys1"]
+      },
+      "node-sys1": {
+        "id": "node-sys1",
+        "message": {
+          "id": "node-sys1",
+          "author": { "role": "system" },
+          "content": { "content_type": "text", "parts": [""] },
+          "metadata": { "is_visually_hidden_from_conversation": true },
+          "create_time": null,
+          "weight": 0.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-root",
+        "children": ["node-ctx1"]
+      },
+      "node-ctx1": {
+        "id": "node-ctx1",
+        "message": {
+          "id": "node-ctx1",
+          "author": { "role": "user" },
+          "content": { "content_type": "user_editable_context", "parts": [""], "user_profile": "test user" },
+          "metadata": { "is_visually_hidden_from_conversation": true },
+          "create_time": null,
+          "weight": 1.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-sys1",
+        "children": ["node-u1"]
+      },
+      "node-u1": {
+        "id": "node-u1",
+        "message": {
+          "id": "node-u1",
+          "author": { "role": "user" },
+          "content": { "content_type": "text", "parts": ["你好，请帮我解释一下什么是 RAG（检索增强生成）技术？它在实际应用中有哪些优势？"] },
+          "metadata": {},
+          "create_time": 1770110400.0,
+          "weight": 1.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-ctx1",
+        "children": ["node-a1"]
+      },
+      "node-a1": {
+        "id": "node-a1",
+        "message": {
+          "id": "node-a1",
+          "author": { "role": "assistant" },
+          "content": { "content_type": "text", "parts": ["RAG（Retrieval-Augmented Generation，检索增强生成）是一种将信息检索与文本生成相结合的技术架构。它的核心思想是：在大语言模型生成回答之前，先从外部知识库中检索相关文档，然后将这些检索到的文档作为上下文提供给模型，从而生成更准确、更有据可依的回答。\n\nRAG 的主要优势包括：\n1. 减少幻觉：通过提供真实的参考资料，降低模型编造信息的概率\n2. 知识更新：无需重新训练模型，只需更新知识库即可获得最新信息\n3. 可追溯性：每个回答都可以追溯到具体的参考文档\n4. 成本效益：比微调整个模型更经济"] },
+          "metadata": { "model_slug": "gpt-4o" },
+          "create_time": 1770110450.0,
+          "weight": 1.0,
+          "status": "finished_successfully",
+          "end_turn": true
+        },
+        "parent": "node-u1",
+        "children": ["node-u2"]
+      },
+      "node-u2": {
+        "id": "node-u2",
+        "message": {
+          "id": "node-u2",
+          "author": { "role": "user" },
+          "content": { "content_type": "text", "parts": ["那 RAG 和 Fine-tuning 相比，各有什么适用场景？"] },
+          "metadata": {},
+          "create_time": 1770110500.0,
+          "weight": 1.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-a1",
+        "children": ["node-tool1"]
+      },
+      "node-tool1": {
+        "id": "node-tool1",
+        "message": {
+          "id": "node-tool1",
+          "author": { "role": "tool", "name": "web_search" },
+          "content": { "content_type": "text", "parts": ["搜索结果：RAG vs Fine-tuning..."] },
+          "metadata": { "is_visually_hidden_from_conversation": true },
+          "create_time": 1770110510.0,
+          "weight": 1.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-u2",
+        "children": ["node-a2"]
+      },
+      "node-a2": {
+        "id": "node-a2",
+        "message": {
+          "id": "node-a2",
+          "author": { "role": "assistant" },
+          "content": { "content_type": "text", "parts": ["RAG 和 Fine-tuning 是两种不同的模型增强策略，适用场景如下：\n\n**RAG 适用场景：**\n- 知识库频繁更新（如新闻、产品文档）\n- 需要引用具体来源\n- 数据量大但查询模式简单\n- 预算有限\n\n**Fine-tuning 适用场景：**\n- 需要模型学习特定的写作风格或格式\n- 任务高度专业化（如法律、医疗）\n- 输入输出模式固定\n- 对延迟要求极高\n\n实际工程中，两者也可以结合使用：先用 Fine-tuning 让模型理解领域术语和风格，再用 RAG 提供实时知识。"] },
+          "metadata": { "model_slug": "gpt-4o" },
+          "create_time": 1770110550.0,
+          "weight": 1.0,
+          "status": "finished_successfully",
+          "end_turn": true
+        },
+        "parent": "node-tool1",
+        "children": ["node-u3"]
+      },
+      "node-u3": {
+        "id": "node-u3",
+        "message": {
+          "id": "node-u3",
+          "author": { "role": "user" },
+          "content": { "content_type": "text", "parts": ["谢谢！"] },
+          "metadata": {},
+          "create_time": 1770110600.0,
+          "weight": 1.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-a2",
+        "children": ["node-a3-placeholder", "node-a4"]
+      },
+      "node-a3-placeholder": {
+        "id": "node-a3-placeholder",
+        "message": {
+          "id": "node-a3-placeholder",
+          "author": { "role": "assistant" },
+          "content": { "content_type": "text", "parts": [""] },
+          "metadata": { "model_slug": "gpt-4o" },
+          "create_time": 1770110610.0,
+          "weight": 0.0,
+          "status": "finished_successfully"
+        },
+        "parent": "node-u3",
+        "children": []
+      },
+      "node-a4": {
+        "id": "node-a4",
+        "message": {
+          "id": "node-a4",
+          "author": { "role": "assistant" },
+          "content": { "content_type": "text", "parts": ["不客气！如果你在实施 RAG 时遇到任何问题，随时可以问我。祝你的项目顺利！"] },
+          "metadata": { "model_slug": "gpt-4o" },
+          "create_time": 1770110620.0,
+          "weight": 1.0,
+          "status": "finished_successfully",
+          "end_turn": true
+        },
+        "parent": "node-u3",
+        "children": []
+      }
+    }
+  },
+  {
+    "title": "测试对话：空对话",
+    "create_time": 1770200000.0,
+    "update_time": 1770200000.0,
+    "conversation_id": "test-conv-002",
+    "current_node": "empty-root",
+    "mapping": {
+      "empty-root": {
+        "id": "empty-root",
+        "message": null,
+        "parent": null,
+        "children": []
+      }
+    }
+  },
+  {
+    "title": "测试对话：纯系统消息",
+    "create_time": 1770300000.0,
+    "update_time": 1770300000.0,
+    "conversation_id": "test-conv-003",
+    "current_node": "sys-only-2",
+    "mapping": {
+      "sys-root": {
+        "id": "sys-root",
+        "message": null,
+        "parent": null,
+        "children": ["sys-only-1"]
+      },
+      "sys-only-1": {
+        "id": "sys-only-1",
+        "message": {
+          "id": "sys-only-1",
+          "author": { "role": "system" },
+          "content": { "content_type": "text", "parts": ["System init"] },
+          "metadata": { "is_visually_hidden_from_conversation": true },
+          "create_time": null,
+          "weight": 0.0,
+          "status": "finished_successfully"
+        },
+        "parent": "sys-root",
+        "children": ["sys-only-2"]
+      },
+      "sys-only-2": {
+        "id": "sys-only-2",
+        "message": {
+          "id": "sys-only-2",
+          "author": { "role": "system" },
+          "content": { "content_type": "text", "parts": ["System context"] },
+          "metadata": { "is_visually_hidden_from_conversation": true },
+          "create_time": null,
+          "weight": 0.0,
+          "status": "finished_successfully"
+        },
+        "parent": "sys-only-1",
+        "children": []
+      }
+    }
+  }
+]
