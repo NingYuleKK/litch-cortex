@@ -2,16 +2,25 @@
  * Conversation Upload Route — V0.8
  *
  * Accepts ChatGPT conversations.json via multipart/form-data.
- * Follows the same pattern as uploadRoute.ts (PDF upload).
+ * Uses disk storage (not memory) to avoid OOM on large files.
  */
 import { Router } from "express";
 import multer from "multer";
+import os from "os";
+import path from "path";
+import fs from "fs/promises";
 import { getCortexUser } from "./authRoute";
 import { importConversationsJson } from "./import-service";
 
-// ─── Multer config (memory storage, 500MB limit, .json only) ────
+// ─── Multer config (disk storage, 500MB limit, .json only) ─────
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, file, cb) => {
+      const unique = `cortex-conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      cb(null, `${unique}${path.extname(file.originalname)}`);
+    },
+  }),
   limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
   fileFilter: (_req, file, cb) => {
     if (
@@ -50,6 +59,8 @@ conversationUploadRouter.post(
       // 3. Validate projectId
       const projectId = req.body.projectId ? parseInt(req.body.projectId) : null;
       if (!projectId || isNaN(projectId)) {
+        // Clean up temp file
+        await fs.unlink(file.path).catch(() => {});
         res.status(400).json({ error: "projectId is required" });
         return;
       }
@@ -59,8 +70,10 @@ conversationUploadRouter.post(
       );
 
       // 4. Start async import — returns immediately with importLogId
+      //    Pass file path instead of buffer; import-service will stream from disk
       const importLogId = await importConversationsJson({
-        buffer: file.buffer,
+        filePath: file.path,
+        fileSize: file.size,
         filename: file.originalname,
         projectId,
         cortexUserId: cortexUser.id,
@@ -74,6 +87,10 @@ conversationUploadRouter.post(
         message: "Import started. Use importProgress to track progress.",
       });
     } catch (err: any) {
+      // Clean up temp file on error
+      if (req.file?.path) {
+        await fs.unlink(req.file.path).catch(() => {});
+      }
       console.error("[ConversationUpload] Error:", err.message);
       res.status(500).json({ error: err.message || "Internal server error" });
     }

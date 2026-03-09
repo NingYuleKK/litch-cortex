@@ -57,13 +57,13 @@ export function buildStableId(
  * Group messages into Q&A pairs: (user, assistant).
  * Handles edge cases: orphan user, consecutive same-role, etc.
  */
-interface QAPair {
+export interface QAPair {
   user: ParsedMessage | null;
   assistant: ParsedMessage | null;
   turnIndex: number;
 }
 
-function groupIntoQAPairs(messages: ParsedMessage[]): QAPair[] {
+export function groupIntoQAPairs(messages: ParsedMessage[]): QAPair[] {
   const pairs: QAPair[] = [];
   let turnIndex = 0;
   let i = 0;
@@ -97,7 +97,7 @@ function groupIntoQAPairs(messages: ParsedMessage[]): QAPair[] {
 /**
  * Format a Q&A pair into text content.
  */
-function formatQAPair(pair: QAPair): string {
+export function formatQAPair(pair: QAPair): string {
   const parts: string[] = [];
   if (pair.user) {
     parts.push(`[Q] ${pair.user.content}`);

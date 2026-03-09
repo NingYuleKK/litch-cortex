@@ -36,6 +36,16 @@ export async function getDb() {
   return _db;
 }
 
+/**
+ * Run a function inside a database transaction.
+ * If the callback throws, the transaction is rolled back automatically.
+ */
+export async function withTransaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(fn);
+}
+
 // ─── User Helpers (Manus OAuth - kept for compatibility) ───────────
 
 export async function upsertUser(user: InsertUser): Promise<void> {
@@ -914,11 +924,20 @@ Output in Markdown format.`,
 // V0.8 — Conversation Import Helpers
 // ═══════════════════════════════════════════════════════════════════
 
-// ─── Conversation CRUD ──────────────────────────────────────────
+// Type for db or transaction instance (both support the same query interface)
+type DbOrTx = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
-export async function createConversation(data: InsertConversation): Promise<number> {
+async function resolveDb(tx?: DbOrTx): Promise<DbOrTx> {
+  if (tx) return tx;
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  return db;
+}
+
+// ─── Conversation CRUD ──────────────────────────────────────────
+
+export async function createConversation(data: InsertConversation, tx?: DbOrTx): Promise<number> {
+  const db = await resolveDb(tx);
   const result = await db.insert(conversations).values(data);
   return result[0].insertId;
 }
@@ -973,17 +992,16 @@ export async function getConversationById(id: number): Promise<Conversation | un
 export async function updateConversation(
   id: number,
   data: Partial<Omit<InsertConversation, "id">>,
+  tx?: DbOrTx,
 ): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  const db = await resolveDb(tx);
   await db.update(conversations).set(data).where(eq(conversations.id, id));
 }
 
 // ─── Conversation Message CRUD ──────────────────────────────────
 
-export async function insertConversationMessages(data: InsertConversationMessage[]): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+export async function insertConversationMessages(data: InsertConversationMessage[], tx?: DbOrTx): Promise<void> {
+  const db = await resolveDb(tx);
   if (data.length === 0) return;
   // Batch insert in groups of 100
   for (let i = 0; i < data.length; i += 100) {
@@ -1044,9 +1062,9 @@ export async function insertChunksWithStableId(
     tokenCount: number;
     stableId: string;
   }>,
+  tx?: DbOrTx,
 ): Promise<{ inserted: number; skipped: number }> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  const db = await resolveDb(tx);
   if (data.length === 0) return { inserted: 0, skipped: 0 };
 
   // Check which stableIds already exist
@@ -1093,6 +1111,40 @@ export async function deleteChunksByConversationAndStableIds(stableIds: string[]
   if (!db) throw new Error("Database not available");
   if (stableIds.length === 0) return;
   await db.delete(chunks).where(inArray(chunks.stableId, stableIds));
+}
+
+/**
+ * Delete chunks whose stableId starts with the given prefix.
+ * Used for targeted deletion of chunks from specific Q&A pairs.
+ */
+export async function deleteChunksByStableIdPrefix(prefix: string): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.delete(chunks).where(like(chunks.stableId, `${prefix}%`));
+  return result[0]?.affectedRows ?? 0;
+}
+
+/**
+ * Update a single conversation message's content and hash.
+ * Used for true incremental update when message content changes.
+ */
+export async function updateConversationMessageContent(
+  conversationId: number,
+  externalMessageId: string,
+  content: string,
+  contentHash: string,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .update(conversationMessages)
+    .set({ content, contentHash })
+    .where(
+      and(
+        eq(conversationMessages.conversationId, conversationId),
+        eq(conversationMessages.externalMessageId, externalMessageId),
+      ),
+    );
 }
 
 // ─── Import Log CRUD ────────────────────────────────────────────

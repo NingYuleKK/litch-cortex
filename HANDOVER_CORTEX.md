@@ -18,7 +18,7 @@ V0.8 的核心变更是 **ChatGPT 对话 JSON 导入**：支持导入 ChatGPT `c
 | PDF 解析 | pdf-parse | 服务端解析 PDF 文本 |
 | LLM | **多 Provider 抽象层（V0.5）** | 支持内置 API / OpenAI / OpenRouter / 自定义 Provider |
 | Embedding | **Embedding Service（V0.6）** | 支持内置 / OpenAI / 自定义 Provider |
-| 对话导入 | **Import Service（V0.8）** | 流式 JSON 解析（stream-json）、三级去重、归因日志 |
+| 对话导入 | **Import Service（V0.8）** | 真流式 JSON 解析（stream-json + disk storage）、真增量更新、三级去重、事务包裹、归因日志 |
 | 认证 | 独立用户名密码 + JWT（V0.3） | 替代 Manus OAuth，支持独立部署 |
 | 密码哈希 | bcryptjs | 安全存储密码 |
 | 部署 | Manus 平台 | 一键部署 |
@@ -511,7 +511,7 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | V0.5.2 | 2026-02-27 | 话题摘要对话式交互：topicConversations 表、多轮对话 tRPC API、迷你聊天窗口、历史对话管理、Markdown 渲染 |
 | **V0.6** | **2026-02-28** | **Embedding 向量搜索：chunkEmbeddings/embeddingConfig 表、Embedding Service、语义搜索（余弦相似度 top-K）、分段预览 embedding 状态、设置页 Embedding 配置** |
 | **V0.7** | **2026-03-05** | **Docker 化部署：Dockerfile（多阶段构建）、docker-compose.yml（MySQL 8.0）、本地磁盘存储、独立 LLM/Embedding 配置必填、seedDefaultAdmin 改用 crypto.randomBytes、initialPassword 停写明文；本地全链路测试通过** |
-| **V0.8** | **2026-03-09** | **ChatGPT 对话 JSON 导入：chatgpt-parser（主链回溯+7条过滤规则）、conversation-chunker（Q&A 对分段+stableId）、import-service（流式解析+三级去重+归因日志）、conversations/conversationMessages/importLogs 3 张新表、chunks 表扩展（conversationId+stableId）、conversation tRPC router 6 端点、对话导入前端页面（上传+进度+列表+历史）、Embedding V2 查询集成、53 个新测试全通过** |
+| **V0.8** | **2026-03-09** | **ChatGPT 对话 JSON 导入：chatgpt-parser（主链回溯+7条过滤规则）、conversation-chunker（Q&A 对分段+stableId）、import-service（真流式解析+真增量更新+三级去重+事务包裹+归因日志）、conversations/conversationMessages/importLogs 3 张新表（含 projectId+externalId 复合唯一索引）、chunks 表扩展（conversationId+stableId）、conversation tRPC router 6 端点、对话导入前端页面（上传+进度+列表+历史）、Embedding V2 查询集成、69 个新测试全通过；Review 修复 M1-M5：真增量（只更新受影响消息+chunk）、真流式（multer diskStorage + 边解析边处理）、竞态防护（复合唯一索引+importing→done 状态机+事务）、Drizzle migration SQL** |
 
 ---
 

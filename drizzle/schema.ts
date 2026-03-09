@@ -266,7 +266,7 @@ export const conversations = mysqlTable("conversations", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => [
-  index("conversations_externalId_idx").on(table.externalId),
+  uniqueIndex("conversations_project_external_idx").on(table.projectId, table.externalId),
   index("conversations_projectId_idx").on(table.projectId),
 ]);
 

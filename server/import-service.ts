@@ -2,13 +2,14 @@
  * Import Service — V0.8
  *
  * Orchestrates ChatGPT conversations.json import with:
- *   - Streaming JSON parsing for large files (≥ 10MB via stream-json)
- *   - Small file fast path (< 10MB direct JSON.parse)
+ *   - True streaming: reads from disk file, processes each conversation as it's parsed
+ *   - Small file fast path (< 10MB direct JSON.parse for simplicity)
  *   - Three-level dedup: conversation → message → chunk (stableId)
  *   - In-memory progress tracking with DB fallback
  *   - Full attribution logging via import_logs table
  */
-import { Readable } from "stream";
+import { createReadStream } from "fs";
+import fs from "fs/promises";
 import { parser } from "stream-json";
 import { streamArray } from "stream-json/streamers/StreamArray";
 import {
@@ -17,7 +18,13 @@ import {
   type ChatGPTConversation,
   type ParsedConversation,
 } from "./chatgpt-parser";
-import { chunkConversation } from "./conversation-chunker";
+import {
+  chunkConversation,
+  groupIntoQAPairs,
+  formatQAPair,
+  buildStableId,
+} from "./conversation-chunker";
+import { chunkText } from "./uploadRoute";
 import {
   createImportLog,
   updateImportLog,
@@ -27,8 +34,9 @@ import {
   insertConversationMessages,
   getExistingMessageIds,
   insertChunksWithStableId,
-  deleteChunksByConversationAndStableIds,
-  getChunksByConversation,
+  deleteChunksByStableIdPrefix,
+  updateConversationMessageContent,
+  withTransaction,
 } from "./db";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -51,7 +59,8 @@ export interface ImportProgress {
 }
 
 export interface ImportParams {
-  buffer: Buffer;
+  filePath: string;       // path to temp file on disk
+  fileSize: number;       // file size in bytes
   filename: string;
   projectId: number;
   cortexUserId: number;
@@ -72,21 +81,20 @@ export function getImportProgress(importLogId: number): ImportProgress | undefin
 // ═══════════════════════════════════════════════════════════════════
 
 const SMALL_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
-const BATCH_SIZE = 50;
 
 /**
  * Start a conversation import. Creates import_log immediately, returns importLogId.
  * The actual import runs asynchronously in the background.
  */
 export async function importConversationsJson(params: ImportParams): Promise<number> {
-  const { buffer, filename, projectId, cortexUserId } = params;
+  const { fileSize, filename, projectId, cortexUserId } = params;
 
   // Create import_log record
   const importLogId = await createImportLog({
     cortexUserId,
     projectId,
     filename,
-    fileSize: buffer.length,
+    fileSize,
     status: "running",
   });
 
@@ -129,83 +137,121 @@ async function runImport(
   progress: ImportProgress,
   startTime: number,
 ): Promise<void> {
-  const { buffer, projectId, cortexUserId } = params;
+  const { filePath, fileSize, projectId, cortexUserId } = params;
 
-  let conversations: ChatGPTConversation[];
+  try {
+    progress.phase = "importing";
 
-  // Phase 1: Parse JSON
-  progress.phase = "parsing";
-  if (buffer.length < SMALL_FILE_THRESHOLD) {
-    // Small file: direct parse
-    conversations = parseJsonDirect(buffer);
-  } else {
-    // Large file: streaming parse
-    conversations = await parseJsonStream(buffer);
-  }
-
-  progress.conversationsTotal = conversations.length;
-
-  // Phase 2: Import in batches
-  progress.phase = "importing";
-
-  for (let i = 0; i < conversations.length; i += BATCH_SIZE) {
-    const batch = conversations.slice(i, i + BATCH_SIZE);
-    for (const raw of batch) {
-      try {
-        await importSingleConversation(raw, projectId, cortexUserId, importLogId, progress);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        progress.errors.push(`Conversation ${raw.conversation_id}: ${msg}`);
-        console.error(`[import-service] Error importing ${raw.conversation_id}:`, msg);
-      }
-      progress.conversationsProcessed++;
+    if (fileSize < SMALL_FILE_THRESHOLD) {
+      // Small file: read from disk, JSON.parse, process sequentially
+      await importSmallFile(filePath, projectId, cortexUserId, importLogId, progress);
+    } else {
+      // Large file: stream from disk, process each conversation as it arrives
+      await importLargeFileStreaming(filePath, projectId, cortexUserId, importLogId, progress);
     }
+
+    // Finalize
+    progress.phase = "finalizing";
+    progress.status = "completed";
+    await finalizeImport(importLogId, progress, startTime);
+  } finally {
+    // Always clean up temp file
+    await fs.unlink(filePath).catch(() => {});
+
+    // Keep progress in memory for 5 minutes after completion, then clean up
+    setTimeout(() => {
+      activeImports.delete(importLogId);
+    }, 5 * 60 * 1000);
   }
-
-  // Phase 3: Finalize
-  progress.phase = "finalizing";
-  progress.status = "completed";
-  await finalizeImport(importLogId, progress, startTime);
-
-  // Keep progress in memory for 5 minutes after completion, then clean up
-  setTimeout(() => {
-    activeImports.delete(importLogId);
-  }, 5 * 60 * 1000);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// JSON Parsing
+// Small file path (< 10MB)
 // ═══════════════════════════════════════════════════════════════════
 
-function parseJsonDirect(buffer: Buffer): ChatGPTConversation[] {
-  const raw = JSON.parse(buffer.toString("utf-8"));
+async function importSmallFile(
+  filePath: string,
+  projectId: number,
+  cortexUserId: number,
+  importLogId: number,
+  progress: ImportProgress,
+): Promise<void> {
+  const raw = JSON.parse(await fs.readFile(filePath, "utf-8"));
   if (!Array.isArray(raw)) {
     throw new Error("Expected a JSON array of conversations");
   }
-  return raw.filter((item: unknown) => {
+
+  progress.conversationsTotal = raw.length;
+
+  for (const item of raw) {
     if (!isChatGPTConversation(item)) {
-      console.warn("[import-service] Skipping invalid conversation object");
-      return false;
+      progress.errors.push("Skipping invalid conversation object");
+      progress.conversationsProcessed++;
+      continue;
     }
-    return true;
-  });
+    try {
+      await importSingleConversation(item, projectId, cortexUserId, importLogId, progress);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      progress.errors.push(`Conversation ${item.conversation_id}: ${msg}`);
+      console.error(`[import-service] Error importing ${item.conversation_id}:`, msg);
+    }
+    progress.conversationsProcessed++;
+  }
 }
 
-async function parseJsonStream(buffer: Buffer): Promise<ChatGPTConversation[]> {
-  return new Promise((resolve, reject) => {
-    const conversations: ChatGPTConversation[] = [];
-    const readable = Readable.from(buffer);
+// ═══════════════════════════════════════════════════════════════════
+// Large file streaming path (≥ 10MB)
+// ═══════════════════════════════════════════════════════════════════
 
+async function importLargeFileStreaming(
+  filePath: string,
+  projectId: number,
+  cortexUserId: number,
+  importLogId: number,
+  progress: ImportProgress,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const readable = createReadStream(filePath, { encoding: "utf-8" });
     const pipeline = readable.pipe(parser()).pipe(streamArray());
 
+    // Process each conversation as it arrives from the stream
+    // Use a queue to ensure sequential processing (stream emits faster than DB writes)
+    let processing = Promise.resolve();
+    let totalSeen = 0;
+
     pipeline.on("data", ({ value }: { value: unknown }) => {
-      if (isChatGPTConversation(value)) {
-        conversations.push(value);
+      totalSeen++;
+      progress.conversationsTotal = totalSeen;
+
+      if (!isChatGPTConversation(value)) {
+        progress.errors.push("Skipping invalid conversation object");
+        progress.conversationsProcessed++;
+        return;
       }
+
+      const conv = value;
+      // Chain each import sequentially to avoid overwhelming the DB
+      processing = processing.then(async () => {
+        try {
+          await importSingleConversation(conv, projectId, cortexUserId, importLogId, progress);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          progress.errors.push(`Conversation ${conv.conversation_id}: ${msg}`);
+          console.error(`[import-service] Error importing ${conv.conversation_id}:`, msg);
+        }
+        progress.conversationsProcessed++;
+      });
     });
 
-    pipeline.on("end", () => resolve(conversations));
-    pipeline.on("error", (err: Error) => reject(err));
+    pipeline.on("end", () => {
+      // Wait for all queued processing to finish
+      processing.then(resolve).catch(reject);
+    });
+
+    pipeline.on("error", (err: Error) => {
+      processing.then(() => reject(err)).catch(reject);
+    });
   });
 }
 
@@ -250,6 +296,8 @@ async function importSingleConversation(
 
 /**
  * Full import: create conversation record + messages + chunks.
+ * All writes are wrapped in a transaction — rollback on any failure.
+ * Conversation starts as "importing" and is updated to "done" at the end.
  */
 async function fullImportConversation(
   parsed: ParsedConversation,
@@ -258,59 +306,76 @@ async function fullImportConversation(
   importLogId: number,
   progress: ImportProgress,
 ): Promise<void> {
-  // Create conversation record
-  const conversationId = await createConversation({
-    projectId,
-    cortexUserId,
-    externalId: parsed.externalId,
-    title: parsed.title,
-    source: "chatgpt",
-    model: parsed.model,
-    messageCount: parsed.messages.length,
-    createTime: parsed.createTime,
-    updateTime: parsed.updateTime,
-    status: "done",
-    rawMetadata: parsed.rawMetadata,
-    importLogId,
+  const result = await withTransaction(async (tx) => {
+    // Create conversation record with "importing" status
+    const conversationId = await createConversation({
+      projectId,
+      cortexUserId,
+      externalId: parsed.externalId,
+      title: parsed.title,
+      source: "chatgpt",
+      model: parsed.model,
+      messageCount: parsed.messages.length,
+      createTime: parsed.createTime,
+      updateTime: parsed.updateTime,
+      status: "importing",
+      rawMetadata: parsed.rawMetadata,
+      importLogId,
+    }, tx);
+
+    // Insert messages
+    let messagesInserted = 0;
+    if (parsed.messages.length > 0) {
+      await insertConversationMessages(
+        parsed.messages.map((m) => ({
+          conversationId,
+          externalMessageId: m.externalMessageId,
+          role: m.role,
+          content: m.content,
+          contentHash: m.contentHash,
+          position: m.position,
+          modelSlug: m.modelSlug,
+          createTime: m.createTime,
+        })),
+        tx,
+      );
+      messagesInserted = parsed.messages.length;
+    }
+
+    // Generate and insert chunks
+    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    let chunksInserted = 0;
+    let chunksSkippedCount = 0;
+    if (chunks.length > 0) {
+      const chunkResult = await insertChunksWithStableId(
+        chunks.map((c) => ({
+          conversationId,
+          content: c.content,
+          position: c.position,
+          tokenCount: c.tokenCount,
+          stableId: c.stableId,
+        })),
+        tx,
+      );
+      chunksInserted = chunkResult.inserted;
+      chunksSkippedCount = chunkResult.skipped;
+    }
+
+    // Mark conversation as done (within same transaction)
+    await updateConversation(conversationId, { status: "done" }, tx);
+
+    return { messagesInserted, chunksInserted, chunksSkippedCount };
   });
 
-  // Insert messages
-  if (parsed.messages.length > 0) {
-    await insertConversationMessages(
-      parsed.messages.map((m) => ({
-        conversationId,
-        externalMessageId: m.externalMessageId,
-        role: m.role,
-        content: m.content,
-        contentHash: m.contentHash,
-        position: m.position,
-        modelSlug: m.modelSlug,
-        createTime: m.createTime,
-      })),
-    );
-    progress.messagesTotal += parsed.messages.length;
-  }
-
-  // Generate and insert chunks
-  const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
-  if (chunks.length > 0) {
-    const result = await insertChunksWithStableId(
-      chunks.map((c) => ({
-        conversationId,
-        content: c.content,
-        position: c.position,
-        tokenCount: c.tokenCount,
-        stableId: c.stableId,
-      })),
-    );
-    progress.chunksCreated += result.inserted;
-    progress.chunksSkipped += result.skipped;
-  }
+  // Update progress counters after successful commit
+  progress.messagesTotal += result.messagesInserted;
+  progress.chunksCreated += result.chunksInserted;
+  progress.chunksSkipped += result.chunksSkippedCount;
 }
 
 /**
  * Incremental update: diff messages by externalMessageId + contentHash,
- * then rebuild chunks for changed messages.
+ * then update changed messages in DB and rebuild only affected chunks.
  */
 async function incrementalUpdateConversation(
   conversationId: number,
@@ -329,8 +394,6 @@ async function incrementalUpdateConversation(
     return existingHash !== undefined && existingHash !== m.contentHash;
   });
 
-  const needsRebuild = newMessages.length > 0 || changedMessages.length > 0;
-
   // Insert new messages
   if (newMessages.length > 0) {
     await insertConversationMessages(
@@ -348,36 +411,75 @@ async function incrementalUpdateConversation(
     progress.messagesTotal += newMessages.length;
   }
 
-  // For changed messages, we'd need an update path.
-  // For V0.8, we treat hash changes as needing chunk rebuild.
-  // (Message content update is a future enhancement — for now we just rebuild chunks.)
+  // Update changed messages in DB (write back new content + hash)
+  for (const msg of changedMessages) {
+    await updateConversationMessageContent(
+      conversationId,
+      msg.externalMessageId,
+      msg.content,
+      msg.contentHash,
+    );
+  }
 
-  if (needsRebuild) {
-    // Delete old chunks for this conversation and regenerate
-    const oldChunks = await getChunksByConversation(conversationId);
-    if (oldChunks.length > 0) {
-      const oldStableIds = oldChunks
-        .map((c) => c.stableId)
-        .filter((id): id is string => id !== null);
-      if (oldStableIds.length > 0) {
-        await deleteChunksByConversationAndStableIds(oldStableIds);
-      }
-    }
+  // Build set of affected message IDs (new + changed)
+  const affectedMsgIds = new Set<string>([
+    ...newMessages.map((m) => m.externalMessageId),
+    ...changedMessages.map((m) => m.externalMessageId),
+  ]);
 
-    // Regenerate chunks from all messages (including new ones)
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
-    if (chunks.length > 0) {
-      const result = await insertChunksWithStableId(
-        chunks.map((c) => ({
+  if (affectedMsgIds.size > 0) {
+    // Regroup ALL messages into Q&A pairs to find affected pairs
+    const pairs = groupIntoQAPairs(parsed.messages);
+    const affectedPairs = pairs.filter((pair) => {
+      if (pair.user && affectedMsgIds.has(pair.user.externalMessageId)) return true;
+      if (pair.assistant && affectedMsgIds.has(pair.assistant.externalMessageId)) return true;
+      return false;
+    });
+
+    // For each affected pair: delete old chunks by stableId prefix, then regenerate
+    for (const pair of affectedPairs) {
+      const primaryMsgId = pair.user?.externalMessageId || pair.assistant?.externalMessageId || "unknown";
+      const prefix = `chatgpt:${parsed.externalId}:${primaryMsgId}:`;
+      await deleteChunksByStableIdPrefix(prefix);
+
+      // Re-chunk this single pair
+      const formatted = formatQAPair(pair);
+      const titlePrefix = `[对话: ${parsed.title} | Turn ${pair.turnIndex + 1}]\n\n`;
+      const sourceIds: string[] = [];
+      if (pair.user) sourceIds.push(pair.user.externalMessageId);
+      if (pair.assistant) sourceIds.push(pair.assistant.externalMessageId);
+
+      const maxSize = 800;
+      const minSize = 500;
+
+      if (formatted.length <= maxSize) {
+        const content = titlePrefix + formatted;
+        const stableId = buildStableId(parsed.externalId, primaryMsgId, 0, content);
+        const result = await insertChunksWithStableId([{
           conversationId,
-          content: c.content,
-          position: c.position,
-          tokenCount: c.tokenCount,
-          stableId: c.stableId,
-        })),
-      );
-      progress.chunksCreated += result.inserted;
-      progress.chunksSkipped += result.skipped;
+          content,
+          position: 0,
+          tokenCount: content.length,
+          stableId,
+        }]);
+        progress.chunksCreated += result.inserted;
+        progress.chunksSkipped += result.skipped;
+      } else {
+        const subChunks = chunkText(formatted, minSize, maxSize);
+        const chunkData = subChunks.map((sub, ci) => {
+          const content = titlePrefix + sub;
+          return {
+            conversationId,
+            content,
+            position: ci,
+            tokenCount: content.length,
+            stableId: buildStableId(parsed.externalId, primaryMsgId, ci, content),
+          };
+        });
+        const result = await insertChunksWithStableId(chunkData);
+        progress.chunksCreated += result.inserted;
+        progress.chunksSkipped += result.skipped;
+      }
     }
   }
 
