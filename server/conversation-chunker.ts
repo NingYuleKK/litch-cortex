@@ -37,16 +37,20 @@ export interface ChunkOptions {
 
 /**
  * Build a deterministic stable ID for dedup.
- * Format: chatgpt:{conversationExternalId}:{primaryMessageId}:{chunkIndex}:{contentHashFirst8}
+ * Format: chatgpt:{projectId}:{conversationExternalId}:{primaryMessageId}:{chunkIndex}:{contentHashFirst8}
+ *
+ * projectId is included to allow the same conversation to be imported into
+ * multiple projects without stableId collision (B1 fix).
  */
 export function buildStableId(
+  projectId: number,
   conversationExternalId: string,
   primaryMessageId: string,
   chunkIndex: number,
   content: string,
 ): string {
   const hash = createHash("sha256").update(content, "utf8").digest("hex").slice(0, 8);
-  return `chatgpt:${conversationExternalId}:${primaryMessageId}:${chunkIndex}:${hash}`;
+  return `chatgpt:${projectId}:${conversationExternalId}:${primaryMessageId}:${chunkIndex}:${hash}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -111,12 +115,14 @@ export function formatQAPair(pair: QAPair): string {
 /**
  * Chunk a single conversation's messages.
  *
+ * @param projectId — project ID for stableId scoping (cross-project safety)
  * @param conversationExternalId — ChatGPT conversation_id for stableId construction
  * @param title — conversation title for context prefix
  * @param messages — visible messages from parseConversation()
  * @param options — chunk size options
  */
 export function chunkConversation(
+  projectId: number,
   conversationExternalId: string,
   title: string,
   messages: ParsedMessage[],
@@ -145,7 +151,7 @@ export function chunkConversation(
       chunks.push({
         content,
         position: globalPosition++,
-        stableId: buildStableId(conversationExternalId, primaryMsgId, 0, content),
+        stableId: buildStableId(projectId, conversationExternalId, primaryMsgId, 0, content),
         sourceMessageIds: sourceIds,
         tokenCount: content.length,
       });
@@ -157,7 +163,7 @@ export function chunkConversation(
         chunks.push({
           content,
           position: globalPosition++,
-          stableId: buildStableId(conversationExternalId, primaryMsgId, ci, content),
+          stableId: buildStableId(projectId, conversationExternalId, primaryMsgId, ci, content),
           sourceMessageIds: sourceIds,
           tokenCount: content.length,
         });

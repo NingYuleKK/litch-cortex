@@ -45,6 +45,10 @@ conversationUploadRouter.post(
       // 1. Authenticate (Cortex auth only — no Manus fallback)
       const cortexUser = await getCortexUser(req);
       if (!cortexUser) {
+        // Clean up temp file written by multer before auth check
+        if (req.file?.path) {
+          await fs.unlink(req.file.path).catch(() => {});
+        }
         res.status(401).json({ error: "Unauthorized" });
         return;
       }

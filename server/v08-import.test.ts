@@ -295,11 +295,13 @@ describe("import-service: true incremental update", () => {
     expect(progress?.conversationsSkipped).toBe(0);
 
     // Verify updateConversationMessageContent was called for the changed message
+    // (now called with tx as 5th arg due to B3 transaction wrapping)
     expect(mockDb.updateConversationMessageContent).toHaveBeenCalledWith(
       200,
       firstMsgId,
       expect.any(String),
       expect.any(String),
+      expect.anything(), // tx
     );
 
     // Verify deleteChunksByStableIdPrefix was called (targeted deletion)

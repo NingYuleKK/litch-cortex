@@ -231,7 +231,10 @@ async function importLargeFileStreaming(
       }
 
       const conv = value;
-      // Chain each import sequentially to avoid overwhelming the DB
+
+      // Backpressure: pause stream while DB is processing (S3 fix)
+      pipeline.pause();
+
       processing = processing.then(async () => {
         try {
           await importSingleConversation(conv, projectId, cortexUserId, importLogId, progress);
@@ -241,6 +244,8 @@ async function importLargeFileStreaming(
           console.error(`[import-service] Error importing ${conv.conversation_id}:`, msg);
         }
         progress.conversationsProcessed++;
+        // Resume stream after processing is done
+        pipeline.resume();
       });
     });
 
@@ -273,6 +278,13 @@ async function importSingleConversation(
   const existing = await getConversationByExternalId(projectId, parsed.externalId);
 
   if (existing) {
+    // S2: Skip conversations still being imported (concurrent import protection)
+    if (existing.status === "importing") {
+      progress.conversationsSkipped++;
+      progress.errors.push(`Conversation ${parsed.externalId}: skipped (still importing)`);
+      return;
+    }
+
     // Check if conversation has been updated
     const existingUpdateTime = existing.updateTime?.getTime() ?? 0;
     const newUpdateTime = parsed.updateTime?.getTime() ?? 0;
@@ -284,7 +296,7 @@ async function importSingleConversation(
     }
 
     // Conversation updated — do incremental update
-    await incrementalUpdateConversation(existing.id, parsed, progress);
+    await incrementalUpdateConversation(existing.id, projectId, parsed, progress);
     progress.conversationsUpdated++;
     return;
   }
@@ -343,7 +355,7 @@ async function fullImportConversation(
     }
 
     // Generate and insert chunks
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(projectId, parsed.externalId, parsed.title, parsed.messages);
     let chunksInserted = 0;
     let chunksSkippedCount = 0;
     if (chunks.length > 0) {
@@ -375,10 +387,12 @@ async function fullImportConversation(
 
 /**
  * Incremental update: diff messages by externalMessageId + contentHash,
- * then update changed messages in DB and rebuild only affected chunks.
+ * update changed messages, rebuild only affected chunks with correct positions.
+ * Entire operation is wrapped in a transaction (B3 fix).
  */
 async function incrementalUpdateConversation(
   conversationId: number,
+  projectId: number,
   parsed: ParsedConversation,
   progress: ImportProgress,
 ): Promise<void> {
@@ -394,104 +408,134 @@ async function incrementalUpdateConversation(
     return existingHash !== undefined && existingHash !== m.contentHash;
   });
 
-  // Insert new messages
-  if (newMessages.length > 0) {
-    await insertConversationMessages(
-      newMessages.map((m) => ({
-        conversationId,
-        externalMessageId: m.externalMessageId,
-        role: m.role,
-        content: m.content,
-        contentHash: m.contentHash,
-        position: m.position,
-        modelSlug: m.modelSlug,
-        createTime: m.createTime,
-      })),
-    );
-    progress.messagesTotal += newMessages.length;
-  }
-
-  // Update changed messages in DB (write back new content + hash)
-  for (const msg of changedMessages) {
-    await updateConversationMessageContent(
-      conversationId,
-      msg.externalMessageId,
-      msg.content,
-      msg.contentHash,
-    );
-  }
-
   // Build set of affected message IDs (new + changed)
   const affectedMsgIds = new Set<string>([
     ...newMessages.map((m) => m.externalMessageId),
     ...changedMessages.map((m) => m.externalMessageId),
   ]);
 
-  if (affectedMsgIds.size > 0) {
-    // Regroup ALL messages into Q&A pairs to find affected pairs
-    const pairs = groupIntoQAPairs(parsed.messages);
-    const affectedPairs = pairs.filter((pair) => {
-      if (pair.user && affectedMsgIds.has(pair.user.externalMessageId)) return true;
-      if (pair.assistant && affectedMsgIds.has(pair.assistant.externalMessageId)) return true;
-      return false;
-    });
+  const result = await withTransaction(async (tx) => {
+    let messagesInserted = 0;
 
-    // For each affected pair: delete old chunks by stableId prefix, then regenerate
-    for (const pair of affectedPairs) {
-      const primaryMsgId = pair.user?.externalMessageId || pair.assistant?.externalMessageId || "unknown";
-      const prefix = `chatgpt:${parsed.externalId}:${primaryMsgId}:`;
-      await deleteChunksByStableIdPrefix(prefix);
-
-      // Re-chunk this single pair
-      const formatted = formatQAPair(pair);
-      const titlePrefix = `[对话: ${parsed.title} | Turn ${pair.turnIndex + 1}]\n\n`;
-      const sourceIds: string[] = [];
-      if (pair.user) sourceIds.push(pair.user.externalMessageId);
-      if (pair.assistant) sourceIds.push(pair.assistant.externalMessageId);
-
-      const maxSize = 800;
-      const minSize = 500;
-
-      if (formatted.length <= maxSize) {
-        const content = titlePrefix + formatted;
-        const stableId = buildStableId(parsed.externalId, primaryMsgId, 0, content);
-        const result = await insertChunksWithStableId([{
+    // Insert new messages
+    if (newMessages.length > 0) {
+      await insertConversationMessages(
+        newMessages.map((m) => ({
           conversationId,
-          content,
-          position: 0,
-          tokenCount: content.length,
-          stableId,
-        }]);
-        progress.chunksCreated += result.inserted;
-        progress.chunksSkipped += result.skipped;
-      } else {
-        const subChunks = chunkText(formatted, minSize, maxSize);
-        const chunkData = subChunks.map((sub, ci) => {
-          const content = titlePrefix + sub;
-          return {
+          externalMessageId: m.externalMessageId,
+          role: m.role,
+          content: m.content,
+          contentHash: m.contentHash,
+          position: m.position,
+          modelSlug: m.modelSlug,
+          createTime: m.createTime,
+        })),
+        tx,
+      );
+      messagesInserted = newMessages.length;
+    }
+
+    // Update changed messages in DB (write back new content + hash)
+    for (const msg of changedMessages) {
+      await updateConversationMessageContent(
+        conversationId,
+        msg.externalMessageId,
+        msg.content,
+        msg.contentHash,
+        tx,
+      );
+    }
+
+    let chunksInserted = 0;
+    let chunksSkippedCount = 0;
+
+    if (affectedMsgIds.size > 0) {
+      // Compute the full expected chunk list to get correct positions (B2 fix).
+      // This is a pure function — no DB involved.
+      const fullExpectedChunks = chunkConversation(
+        projectId,
+        parsed.externalId,
+        parsed.title,
+        parsed.messages,
+      );
+      // Build a map: stableId → expected position
+      const expectedPositionMap = new Map<string, number>();
+      for (const c of fullExpectedChunks) {
+        expectedPositionMap.set(c.stableId, c.position);
+      }
+
+      // Regroup ALL messages into Q&A pairs to find affected pairs
+      const pairs = groupIntoQAPairs(parsed.messages);
+      const affectedPairs = pairs.filter((pair) => {
+        if (pair.user && affectedMsgIds.has(pair.user.externalMessageId)) return true;
+        if (pair.assistant && affectedMsgIds.has(pair.assistant.externalMessageId)) return true;
+        return false;
+      });
+
+      // For each affected pair: delete old chunks by stableId prefix, then regenerate
+      for (const pair of affectedPairs) {
+        const primaryMsgId = pair.user?.externalMessageId || pair.assistant?.externalMessageId || "unknown";
+        const prefix = `chatgpt:${projectId}:${parsed.externalId}:${primaryMsgId}:`;
+        await deleteChunksByStableIdPrefix(prefix, tx);
+
+        // Re-chunk this single pair
+        const formatted = formatQAPair(pair);
+        const titlePrefix = `[对话: ${parsed.title} | Turn ${pair.turnIndex + 1}]\n\n`;
+
+        const maxSize = 800;
+        const minSize = 500;
+
+        if (formatted.length <= maxSize) {
+          const content = titlePrefix + formatted;
+          const stableId = buildStableId(projectId, parsed.externalId, primaryMsgId, 0, content);
+          const position = expectedPositionMap.get(stableId) ?? 0;
+          const chunkResult = await insertChunksWithStableId([{
             conversationId,
             content,
-            position: ci,
+            position,
             tokenCount: content.length,
-            stableId: buildStableId(parsed.externalId, primaryMsgId, ci, content),
-          };
-        });
-        const result = await insertChunksWithStableId(chunkData);
-        progress.chunksCreated += result.inserted;
-        progress.chunksSkipped += result.skipped;
+            stableId,
+          }], tx);
+          chunksInserted += chunkResult.inserted;
+          chunksSkippedCount += chunkResult.skipped;
+        } else {
+          const subChunks = chunkText(formatted, minSize, maxSize);
+          const chunkData = subChunks.map((sub, ci) => {
+            const content = titlePrefix + sub;
+            const stableId = buildStableId(projectId, parsed.externalId, primaryMsgId, ci, content);
+            const position = expectedPositionMap.get(stableId) ?? ci;
+            return {
+              conversationId,
+              content,
+              position,
+              tokenCount: content.length,
+              stableId,
+            };
+          });
+          const chunkResult = await insertChunksWithStableId(chunkData, tx);
+          chunksInserted += chunkResult.inserted;
+          chunksSkippedCount += chunkResult.skipped;
+        }
       }
     }
-  }
 
-  // Update conversation metadata
-  await updateConversation(conversationId, {
-    title: parsed.title,
-    model: parsed.model,
-    messageCount: parsed.messages.length,
-    updateTime: parsed.updateTime,
-    rawMetadata: parsed.rawMetadata,
-    status: "done",
+    // Update conversation metadata
+    await updateConversation(conversationId, {
+      title: parsed.title,
+      model: parsed.model,
+      messageCount: parsed.messages.length,
+      updateTime: parsed.updateTime,
+      rawMetadata: parsed.rawMetadata,
+      status: "done",
+    }, tx);
+
+    return { messagesInserted, chunksInserted, chunksSkippedCount };
   });
+
+  // Update progress counters after successful commit
+  progress.messagesTotal += result.messagesInserted;
+  progress.chunksCreated += result.chunksInserted;
+  progress.chunksSkipped += result.chunksSkippedCount;
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -277,13 +277,13 @@ describe("conversation-chunker", () => {
 
   it("should produce chunks from a parsed conversation", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
     expect(chunks.length).toBeGreaterThan(0);
   });
 
   it("should pair user+assistant messages as Q&A chunks", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
 
     // Each chunk should contain [Q] and/or [A] markers
     for (const chunk of chunks) {
@@ -295,7 +295,7 @@ describe("conversation-chunker", () => {
 
   it("should include conversation context prefix", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
 
     for (const chunk of chunks) {
       expect(chunk.content).toContain("[对话:");
@@ -305,16 +305,16 @@ describe("conversation-chunker", () => {
 
   it("should generate valid stableId format", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
 
     for (const chunk of chunks) {
-      expect(chunk.stableId).toMatch(/^chatgpt:.+:.+:\d+:[a-f0-9]{8}$/);
+      expect(chunk.stableId).toMatch(/^chatgpt:\d+:.+:.+:\d+:[a-f0-9]{8}$/);
     }
   });
 
   it("should have sequential positions", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
 
     for (let i = 0; i < chunks.length; i++) {
       expect(chunks[i].position).toBe(i);
@@ -323,7 +323,7 @@ describe("conversation-chunker", () => {
 
   it("should track source message IDs", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
 
     for (const chunk of chunks) {
       expect(chunk.sourceMessageIds.length).toBeGreaterThan(0);
@@ -332,7 +332,7 @@ describe("conversation-chunker", () => {
 
   it("should set tokenCount as content length", () => {
     const parsed = parseConversation(conv);
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
 
     for (const chunk of chunks) {
       expect(chunk.tokenCount).toBe(chunk.content.length);
@@ -340,7 +340,7 @@ describe("conversation-chunker", () => {
   });
 
   it("should handle empty messages array", () => {
-    const chunks = chunkConversation("conv-empty", "Empty", []);
+    const chunks = chunkConversation(1, "conv-empty", "Empty", []);
     expect(chunks).toHaveLength(0);
   });
 
@@ -348,7 +348,7 @@ describe("conversation-chunker", () => {
     const parsed = parseConversation(conv);
     // The last pair is user "谢谢！" + assistant response
     // All messages should be chunked
-    const chunks = chunkConversation(parsed.externalId, parsed.title, parsed.messages);
+    const chunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
     expect(chunks.length).toBeGreaterThan(0);
   });
 });
@@ -359,26 +359,32 @@ describe("conversation-chunker", () => {
 
 describe("stableId determinism", () => {
   it("same content should produce same stableId", () => {
-    const id1 = buildStableId("conv-1", "msg-1", 0, "hello world");
-    const id2 = buildStableId("conv-1", "msg-1", 0, "hello world");
+    const id1 = buildStableId(1, "conv-1", "msg-1", 0, "hello world");
+    const id2 = buildStableId(1, "conv-1", "msg-1", 0, "hello world");
     expect(id1).toBe(id2);
   });
 
   it("different chunk_index should produce different stableId", () => {
-    const id1 = buildStableId("conv-1", "msg-1", 0, "hello world");
-    const id2 = buildStableId("conv-1", "msg-1", 1, "hello world");
+    const id1 = buildStableId(1, "conv-1", "msg-1", 0, "hello world");
+    const id2 = buildStableId(1, "conv-1", "msg-1", 1, "hello world");
     expect(id1).not.toBe(id2);
   });
 
   it("different content should produce different stableId (hash differs)", () => {
-    const id1 = buildStableId("conv-1", "msg-1", 0, "content A");
-    const id2 = buildStableId("conv-1", "msg-1", 0, "content B");
+    const id1 = buildStableId(1, "conv-1", "msg-1", 0, "content A");
+    const id2 = buildStableId(1, "conv-1", "msg-1", 0, "content B");
     expect(id1).not.toBe(id2);
   });
 
-  it("stableId should contain all components", () => {
-    const id = buildStableId("conv-abc", "msg-xyz", 2, "test");
-    expect(id).toMatch(/^chatgpt:conv-abc:msg-xyz:2:[a-f0-9]{8}$/);
+  it("stableId should contain all components including projectId", () => {
+    const id = buildStableId(42, "conv-abc", "msg-xyz", 2, "test");
+    expect(id).toMatch(/^chatgpt:42:conv-abc:msg-xyz:2:[a-f0-9]{8}$/);
+  });
+
+  it("different projectId should produce different stableId (B1 cross-project safety)", () => {
+    const id1 = buildStableId(1, "conv-1", "msg-1", 0, "hello world");
+    const id2 = buildStableId(2, "conv-1", "msg-1", 0, "hello world");
+    expect(id1).not.toBe(id2);
   });
 });
 

@@ -1117,9 +1117,8 @@ export async function deleteChunksByConversationAndStableIds(stableIds: string[]
  * Delete chunks whose stableId starts with the given prefix.
  * Used for targeted deletion of chunks from specific Q&A pairs.
  */
-export async function deleteChunksByStableIdPrefix(prefix: string): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+export async function deleteChunksByStableIdPrefix(prefix: string, tx?: DbOrTx): Promise<number> {
+  const db = await resolveDb(tx);
   const result = await db.delete(chunks).where(like(chunks.stableId, `${prefix}%`));
   return result[0]?.affectedRows ?? 0;
 }
@@ -1133,9 +1132,9 @@ export async function updateConversationMessageContent(
   externalMessageId: string,
   content: string,
   contentHash: string,
+  tx?: DbOrTx,
 ): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+  const db = await resolveDb(tx);
   await db
     .update(conversationMessages)
     .set({ content, contentHash })
