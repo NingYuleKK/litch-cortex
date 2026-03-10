@@ -15,6 +15,10 @@ import {
   topicConversations, InsertTopicConversation, TopicConversation,
   chunkEmbeddings, InsertChunkEmbedding, ChunkEmbedding,
   embeddingConfig, InsertEmbeddingConfig, EmbeddingConfig,
+  // V0.8
+  conversations, InsertConversation, Conversation,
+  conversationMessages, InsertConversationMessage, ConversationMessage,
+  importLogs, InsertImportLog, ImportLog,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
@@ -30,6 +34,16 @@ export async function getDb() {
     }
   }
   return _db;
+}
+
+/**
+ * Run a function inside a database transaction.
+ * If the callback throws, the transaction is rolled back automatically.
+ */
+export async function withTransaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(fn);
 }
 
 // ─── User Helpers (Manus OAuth - kept for compatibility) ───────────
@@ -679,7 +693,7 @@ export async function getEmbeddingsByChunkIds(chunkIds: number[]): Promise<Chunk
   return db.select().from(chunkEmbeddings).where(inArray(chunkEmbeddings.chunkId, chunkIds));
 }
 
-export async function getEmbeddingsByProject(projectId: number): Promise<Array<ChunkEmbedding & { documentId: number }>> {
+export async function getEmbeddingsByProject(projectId: number): Promise<Array<ChunkEmbedding & { documentId: number | null }>> {
   const db = await getDb();
   if (!db) return [];
   return db
@@ -904,4 +918,370 @@ Output in Markdown format.`,
   for (const preset of presets) {
     await db.insert(promptTemplates).values(preset);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V0.8 — Conversation Import Helpers
+// ═══════════════════════════════════════════════════════════════════
+
+// Type for db or transaction instance (both support the same query interface)
+type DbOrTx = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+async function resolveDb(tx?: DbOrTx): Promise<DbOrTx> {
+  if (tx) return tx;
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db;
+}
+
+// ─── Conversation CRUD ──────────────────────────────────────────
+
+export async function createConversation(data: InsertConversation, tx?: DbOrTx): Promise<number> {
+  const db = await resolveDb(tx);
+  const result = await db.insert(conversations).values(data);
+  return result[0].insertId;
+}
+
+export async function getConversationByExternalId(
+  projectId: number,
+  externalId: string,
+): Promise<Conversation | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.projectId, projectId), eq(conversations.externalId, externalId)))
+    .limit(1);
+  return result[0];
+}
+
+export async function getConversationsByProject(
+  projectId: number,
+  page = 1,
+  pageSize = 20,
+): Promise<Conversation[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.projectId, projectId))
+    .orderBy(desc(conversations.createdAt))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
+}
+
+export async function getConversationsByProjectCount(projectId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: sql<number>`COUNT(*)`.as("count") })
+    .from(conversations)
+    .where(eq(conversations.projectId, projectId));
+  return result[0]?.count || 0;
+}
+
+export async function getConversationById(id: number): Promise<Conversation | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(conversations).where(eq(conversations.id, id)).limit(1);
+  return result[0];
+}
+
+export async function updateConversation(
+  id: number,
+  data: Partial<Omit<InsertConversation, "id">>,
+  tx?: DbOrTx,
+): Promise<void> {
+  const db = await resolveDb(tx);
+  await db.update(conversations).set(data).where(eq(conversations.id, id));
+}
+
+// ─── Conversation Message CRUD ──────────────────────────────────
+
+export async function insertConversationMessages(data: InsertConversationMessage[], tx?: DbOrTx): Promise<void> {
+  const db = await resolveDb(tx);
+  if (data.length === 0) return;
+  // Batch insert in groups of 100
+  for (let i = 0; i < data.length; i += 100) {
+    const batch = data.slice(i, i + 100);
+    await db.insert(conversationMessages).values(batch);
+  }
+}
+
+export async function getMessagesByConversation(conversationId: number): Promise<ConversationMessage[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(conversationMessages)
+    .where(eq(conversationMessages.conversationId, conversationId))
+    .orderBy(asc(conversationMessages.position));
+}
+
+export async function getMessageByExternalId(
+  conversationId: number,
+  externalMessageId: string,
+): Promise<ConversationMessage | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.conversationId, conversationId),
+        eq(conversationMessages.externalMessageId, externalMessageId),
+      ),
+    )
+    .limit(1);
+  return result[0];
+}
+
+export async function getExistingMessageIds(conversationId: number): Promise<Map<string, string>> {
+  const db = await getDb();
+  if (!db) return new Map();
+  const rows = await db
+    .select({
+      externalMessageId: conversationMessages.externalMessageId,
+      contentHash: conversationMessages.contentHash,
+    })
+    .from(conversationMessages)
+    .where(eq(conversationMessages.conversationId, conversationId));
+  return new Map(rows.map(r => [r.externalMessageId, r.contentHash]));
+}
+
+// ─── Chunk Helpers (V0.8 extended) ──────────────────────────────
+
+export async function insertChunksWithStableId(
+  data: Array<{
+    conversationId: number;
+    content: string;
+    position: number;
+    tokenCount: number;
+    stableId: string;
+  }>,
+  tx?: DbOrTx,
+): Promise<{ inserted: number; skipped: number }> {
+  const db = await resolveDb(tx);
+  if (data.length === 0) return { inserted: 0, skipped: 0 };
+
+  // Check which stableIds already exist
+  const stableIds = data.map(d => d.stableId);
+  const existing = await db
+    .select({ stableId: chunks.stableId })
+    .from(chunks)
+    .where(inArray(chunks.stableId, stableIds));
+  const existingSet = new Set(existing.map(e => e.stableId));
+
+  const toInsert = data.filter(d => !existingSet.has(d.stableId));
+  const skipped = data.length - toInsert.length;
+
+  if (toInsert.length > 0) {
+    // Batch insert in groups of 100
+    for (let i = 0; i < toInsert.length; i += 100) {
+      const batch = toInsert.slice(i, i + 100).map(d => ({
+        documentId: null,
+        conversationId: d.conversationId,
+        content: d.content,
+        position: d.position,
+        tokenCount: d.tokenCount,
+        stableId: d.stableId,
+      }));
+      await db.insert(chunks).values(batch);
+    }
+  }
+
+  return { inserted: toInsert.length, skipped };
+}
+
+export async function getChunksByConversation(conversationId: number): Promise<Chunk[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(chunks)
+    .where(eq(chunks.conversationId, conversationId))
+    .orderBy(asc(chunks.position));
+}
+
+export async function deleteChunksByConversationAndStableIds(stableIds: string[]): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (stableIds.length === 0) return;
+  await db.delete(chunks).where(inArray(chunks.stableId, stableIds));
+}
+
+/**
+ * Delete chunks whose stableId starts with the given prefix.
+ * Used for targeted deletion of chunks from specific Q&A pairs.
+ */
+export async function deleteChunksByStableIdPrefix(prefix: string, tx?: DbOrTx): Promise<number> {
+  const db = await resolveDb(tx);
+  const result = await db.delete(chunks).where(like(chunks.stableId, `${prefix}%`));
+  return result[0]?.affectedRows ?? 0;
+}
+
+/**
+ * Update a single conversation message's content and hash.
+ * Used for true incremental update when message content changes.
+ */
+export async function updateConversationMessageContent(
+  conversationId: number,
+  externalMessageId: string,
+  content: string,
+  contentHash: string,
+  tx?: DbOrTx,
+): Promise<void> {
+  const db = await resolveDb(tx);
+  await db
+    .update(conversationMessages)
+    .set({ content, contentHash })
+    .where(
+      and(
+        eq(conversationMessages.conversationId, conversationId),
+        eq(conversationMessages.externalMessageId, externalMessageId),
+      ),
+    );
+}
+
+/**
+ * Update a chunk's position by its stableId.
+ * Used to reconcile positions of unaffected chunks after incremental rebuild.
+ */
+export async function updateChunkPositionByStableId(
+  stableId: string,
+  position: number,
+  tx?: DbOrTx,
+): Promise<void> {
+  const db = await resolveDb(tx);
+  await db
+    .update(chunks)
+    .set({ position })
+    .where(eq(chunks.stableId, stableId));
+}
+
+/**
+ * Get all chunks for a conversation with their stableId and position.
+ * Used for position reconciliation after incremental updates.
+ */
+export async function getChunkStableIdsAndPositions(
+  conversationId: number,
+  tx?: DbOrTx,
+): Promise<Array<{ stableId: string | null; position: number }>> {
+  const db = await resolveDb(tx);
+  return db
+    .select({ stableId: chunks.stableId, position: chunks.position })
+    .from(chunks)
+    .where(eq(chunks.conversationId, conversationId));
+}
+
+// ─── Import Log CRUD ────────────────────────────────────────────
+
+export async function createImportLog(data: InsertImportLog): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(importLogs).values(data);
+  return result[0].insertId;
+}
+
+export async function updateImportLog(
+  id: number,
+  data: Partial<Omit<InsertImportLog, "id">>,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(importLogs).set(data).where(eq(importLogs.id, id));
+}
+
+export async function getImportLogById(id: number): Promise<ImportLog | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(importLogs).where(eq(importLogs.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getImportLogsByProject(projectId: number, limit = 20): Promise<ImportLog[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(importLogs)
+    .where(eq(importLogs.projectId, projectId))
+    .orderBy(desc(importLogs.createdAt))
+    .limit(limit);
+}
+
+// ─── Embedding Queries (V0.8: include conversation chunks) ──────
+
+export async function getEmbeddingCountByProjectV2(projectId: number): Promise<{ total: number; withEmbedding: number }> {
+  const db = await getDb();
+  if (!db) return { total: 0, withEmbedding: 0 };
+
+  // Count ALL chunks in project: document-sourced + conversation-sourced
+  const totalResult = await db
+    .select({ count: sql<number>`COUNT(*)`.as("count") })
+    .from(chunks)
+    .where(
+      or(
+        // Document-sourced chunks
+        inArray(
+          chunks.documentId,
+          db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
+        ),
+        // Conversation-sourced chunks
+        inArray(
+          chunks.conversationId,
+          db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
+        ),
+      ),
+    );
+
+  const embeddedResult = await db
+    .select({ count: sql<number>`COUNT(DISTINCT ${chunkEmbeddings.chunkId})`.as("count") })
+    .from(chunkEmbeddings)
+    .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
+    .where(
+      or(
+        inArray(
+          chunks.documentId,
+          db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
+        ),
+        inArray(
+          chunks.conversationId,
+          db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
+        ),
+      ),
+    );
+
+  return {
+    total: totalResult[0]?.count || 0,
+    withEmbedding: embeddedResult[0]?.count || 0,
+  };
+}
+
+export async function getChunksWithoutEmbeddingV2(projectId: number): Promise<Array<{ id: number; content: string }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({ id: chunks.id, content: chunks.content })
+    .from(chunks)
+    .leftJoin(chunkEmbeddings, eq(chunks.id, chunkEmbeddings.chunkId))
+    .where(
+      and(
+        sql`${chunkEmbeddings.id} IS NULL`,
+        or(
+          inArray(
+            chunks.documentId,
+            db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
+          ),
+          inArray(
+            chunks.conversationId,
+            db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
+          ),
+        ),
+      ),
+    )
+    .orderBy(asc(chunks.id));
 }

@@ -9,6 +9,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import uploadRouter from "../uploadRoute";
+import conversationUploadRouter from "../conversationUploadRoute";
 import authRouter, { seedDefaultAdmin } from "../authRoute";
 import { ENV } from "./env";
 
@@ -45,6 +46,8 @@ async function startServer() {
   app.use(authRouter);
   // PDF upload route (multipart/form-data, bypasses tRPC JSON size limits)
   app.use(uploadRouter);
+  // Conversation JSON upload route (V0.8)
+  app.use(conversationUploadRouter);
   // Docker mode: serve uploaded files from local disk
   if (ENV.deployMode === "docker") {
     app.use("/uploads", express.static(ENV.uploadDir));

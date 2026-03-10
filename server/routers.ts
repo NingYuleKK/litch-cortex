@@ -15,9 +15,15 @@ import {
   getActiveLlmConfig, upsertLlmConfig,
   getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
   createTopicConversation, getTopicConversation, getConversationsByTopic, updateTopicConversation, deleteTopicConversation,
-  insertChunkEmbedding, insertChunkEmbeddingsBatch, getEmbeddingsByProject, getEmbeddingCountByProject, getChunksWithoutEmbedding,
+  insertChunkEmbedding, insertChunkEmbeddingsBatch, getEmbeddingsByProject,
   getActiveEmbeddingConfig, upsertEmbeddingConfig,
+  // V0.8
+  getEmbeddingCountByProjectV2, getChunksWithoutEmbeddingV2,
+  getConversationsByProject, getConversationsByProjectCount, getConversationById,
+  getMessagesByConversation, getChunksByConversation,
+  getImportLogById, getImportLogsByProject,
 } from "./db";
+import { getImportProgress } from "./import-service";
 import { storagePut } from "./storage";
 import { callLLM } from "./llm-service";
 import { encodeApiKey, decodeApiKey, getProviderDefaults } from "./llm-service";
@@ -1123,7 +1129,7 @@ export const appRouter = router({
     status: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .query(async ({ input }) => {
-        const counts = await getEmbeddingCountByProject(input.projectId);
+        const counts = await getEmbeddingCountByProjectV2(input.projectId);
         return {
           totalChunks: counts.total,
           embeddedChunks: counts.withEmbedding,
@@ -1135,7 +1141,7 @@ export const appRouter = router({
     generateForProject: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .mutation(async ({ input }) => {
-        const chunksToEmbed = await getChunksWithoutEmbedding(input.projectId);
+        const chunksToEmbed = await getChunksWithoutEmbeddingV2(input.projectId);
         if (chunksToEmbed.length === 0) {
           return { generated: 0, message: "所有分段已有向量，无需重新生成。" };
         }
@@ -1417,6 +1423,87 @@ export const appRouter = router({
           dimensions: input.dimensions || null,
         });
         return { success: true };
+      }),
+  }),
+
+  // ═══════════════════════════════════════════════════════════════════
+  // V0.8 — Conversation Import
+  // ═══════════════════════════════════════════════════════════════════
+  conversation: router({
+    // Paginated conversation list for a project
+    list: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        page: z.number().default(1),
+        pageSize: z.number().default(20),
+      }))
+      .query(async ({ input }) => {
+        const [items, total] = await Promise.all([
+          getConversationsByProject(input.projectId, input.page, input.pageSize),
+          getConversationsByProjectCount(input.projectId),
+        ]);
+        return { items, total, page: input.page, pageSize: input.pageSize };
+      }),
+
+    // Single conversation detail
+    get: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const conv = await getConversationById(input.id);
+        if (!conv) throw new Error("Conversation not found");
+        return conv;
+      }),
+
+    // Messages for a conversation
+    messages: protectedProcedure
+      .input(z.object({ conversationId: z.number() }))
+      .query(async ({ input }) => {
+        return getMessagesByConversation(input.conversationId);
+      }),
+
+    // Chunks generated from a conversation
+    chunks: protectedProcedure
+      .input(z.object({ conversationId: z.number() }))
+      .query(async ({ input }) => {
+        return getChunksByConversation(input.conversationId);
+      }),
+
+    // Import progress (in-memory with DB fallback)
+    importProgress: protectedProcedure
+      .input(z.object({ importLogId: z.number() }))
+      .query(async ({ input }) => {
+        // Try in-memory first
+        const memProgress = getImportProgress(input.importLogId);
+        if (memProgress) {
+          return memProgress;
+        }
+        // Fallback to DB
+        const log = await getImportLogById(input.importLogId);
+        if (!log) throw new Error("Import log not found");
+        return {
+          importLogId: log.id,
+          status: log.status,
+          phase: "finalizing" as const,
+          conversationsTotal: log.conversationsTotal,
+          conversationsProcessed: log.conversationsImported + log.conversationsSkipped + log.conversationsUpdated,
+          conversationsImported: log.conversationsImported,
+          conversationsSkipped: log.conversationsSkipped,
+          conversationsUpdated: log.conversationsUpdated,
+          messagesTotal: log.messagesTotal,
+          chunksCreated: log.chunksCreated,
+          chunksSkipped: log.chunksSkipped,
+          errors: log.errors ? JSON.parse(log.errors) : [],
+        };
+      }),
+
+    // Import history for a project
+    importHistory: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        limit: z.number().default(20),
+      }))
+      .query(async ({ input }) => {
+        return getImportLogsByProject(input.projectId, input.limit);
       }),
   }),
 });
