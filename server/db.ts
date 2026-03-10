@@ -1146,6 +1146,37 @@ export async function updateConversationMessageContent(
     );
 }
 
+/**
+ * Update a chunk's position by its stableId.
+ * Used to reconcile positions of unaffected chunks after incremental rebuild.
+ */
+export async function updateChunkPositionByStableId(
+  stableId: string,
+  position: number,
+  tx?: DbOrTx,
+): Promise<void> {
+  const db = await resolveDb(tx);
+  await db
+    .update(chunks)
+    .set({ position })
+    .where(eq(chunks.stableId, stableId));
+}
+
+/**
+ * Get all chunks for a conversation with their stableId and position.
+ * Used for position reconciliation after incremental updates.
+ */
+export async function getChunkStableIdsAndPositions(
+  conversationId: number,
+  tx?: DbOrTx,
+): Promise<Array<{ stableId: string | null; position: number }>> {
+  const db = await resolveDb(tx);
+  return db
+    .select({ stableId: chunks.stableId, position: chunks.position })
+    .from(chunks)
+    .where(eq(chunks.conversationId, conversationId));
+}
+
 // ─── Import Log CRUD ────────────────────────────────────────────
 
 export async function createImportLog(data: InsertImportLog): Promise<number> {

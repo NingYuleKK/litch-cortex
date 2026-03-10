@@ -23,7 +23,7 @@ import fixtureData from "./__fixtures__/chatgpt-sample.json";
 const fixture = fixtureData as ChatGPTConversation[];
 
 // ─── Mock DB module ──────────────────────────────────────────────
-const mockDb = {
+const mockDb = vi.hoisted(() => ({
   createImportLog: vi.fn().mockResolvedValue(1),
   updateImportLog: vi.fn().mockResolvedValue(undefined),
   createConversation: vi.fn().mockResolvedValue(100),
@@ -34,8 +34,10 @@ const mockDb = {
   insertChunksWithStableId: vi.fn().mockResolvedValue({ inserted: 5, skipped: 0 }),
   deleteChunksByStableIdPrefix: vi.fn().mockResolvedValue(1),
   updateConversationMessageContent: vi.fn().mockResolvedValue(undefined),
+  updateChunkPositionByStableId: vi.fn().mockResolvedValue(undefined),
+  getChunkStableIdsAndPositions: vi.fn().mockResolvedValue([]),
   withTransaction: vi.fn().mockImplementation(async (fn: (tx: any) => Promise<any>) => fn({})),
-};
+}));
 
 vi.mock("./db", () => mockDb);
 
@@ -89,6 +91,7 @@ beforeEach(() => {
   mockDb.getConversationByExternalId.mockResolvedValue(undefined);
   mockDb.getExistingMessageIds.mockResolvedValue(new Map());
   mockDb.insertChunksWithStableId.mockResolvedValue({ inserted: 5, skipped: 0 });
+  mockDb.getChunkStableIdsAndPositions.mockResolvedValue([]);
   mockDb.withTransaction.mockImplementation(async (fn: (tx: any) => Promise<any>) => fn({}));
 });
 
@@ -520,6 +523,63 @@ describe("import-service: file path selection", () => {
   });
 });
 
+describe("import-service: position reconciliation (S2 regression)", () => {
+  it("should update positions of unaffected chunks when earlier chunk count changes", async () => {
+    const conv = fixture[0];
+    const parsed = parseConversation(conv);
+
+    // Simulate: conversation exists with older updateTime
+    const olderUpdateTime = new Date((parsed.updateTime?.getTime() ?? 0) - 10000);
+    mockDb.getConversationByExternalId.mockResolvedValue({
+      id: 200,
+      externalId: parsed.externalId,
+      updateTime: olderUpdateTime,
+      projectId: 1,
+    });
+
+    // Simulate: first message has changed content hash → triggers rebuild of Q&A pair 0
+    const existingMsgMap = new Map<string, string>();
+    for (const msg of parsed.messages) {
+      existingMsgMap.set(msg.externalMessageId, msg.contentHash);
+    }
+    const firstMsgId = parsed.messages[0].externalMessageId;
+    existingMsgMap.set(firstMsgId, "old_hash_triggers_rebuild");
+    mockDb.getExistingMessageIds.mockResolvedValue(existingMsgMap);
+
+    // Simulate existing chunks with STALE positions (as if old chunk count differed).
+    // After rebuild, position 0 chunk may split or merge, shifting downstream positions.
+    // We return chunks at their old positions to verify reconciliation updates them.
+    const expectedChunks = chunkConversation(1, parsed.externalId, parsed.title, parsed.messages);
+    const staleChunks = expectedChunks.map((c, i) => ({
+      stableId: c.stableId,
+      position: i + 10, // deliberately wrong positions
+    }));
+    mockDb.getChunkStableIdsAndPositions.mockResolvedValue(staleChunks);
+
+    const filePath = await writeTmpJson([conv]);
+    const importLogId = await importConversationsJson({
+      filePath,
+      fileSize: 100,
+      filename: "position-shift.json",
+      projectId: 1,
+      cortexUserId: 1,
+    });
+    await waitForImportDone(importLogId);
+
+    // updateChunkPositionByStableId should have been called for stale positions
+    expect(mockDb.updateChunkPositionByStableId).toHaveBeenCalled();
+
+    // Verify correct positions were assigned
+    for (const call of mockDb.updateChunkPositionByStableId.mock.calls) {
+      const [stableId, position] = call;
+      const expected = expectedChunks.find(c => c.stableId === stableId);
+      if (expected) {
+        expect(position).toBe(expected.position);
+      }
+    }
+  });
+});
+
 describe("import-service: progress tracking", () => {
   it("should finalize import log with correct stats", async () => {
     const filePath = await writeTmpJson([fixture[0]]);
@@ -544,8 +604,8 @@ describe("import-service: progress tracking", () => {
       }),
     );
 
-    // durationMs should be > 0
+    // durationMs should be >= 0 (can be 0 on fast machines/CI)
     const updateCall = mockDb.updateImportLog.mock.calls[0][1];
-    expect(updateCall.durationMs).toBeGreaterThan(0);
+    expect(updateCall.durationMs).toBeGreaterThanOrEqual(0);
   });
 });

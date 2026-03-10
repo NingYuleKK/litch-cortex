@@ -36,6 +36,8 @@ import {
   insertChunksWithStableId,
   deleteChunksByStableIdPrefix,
   updateConversationMessageContent,
+  updateChunkPositionByStableId,
+  getChunkStableIdsAndPositions,
   withTransaction,
 } from "./db";
 
@@ -515,6 +517,18 @@ async function incrementalUpdateConversation(
           const chunkResult = await insertChunksWithStableId(chunkData, tx);
           chunksInserted += chunkResult.inserted;
           chunksSkippedCount += chunkResult.skipped;
+        }
+      }
+
+      // Reconcile positions for ALL chunks (including unaffected ones).
+      // When chunk count changes for an earlier pair, subsequent chunks'
+      // positions shift. Update any that don't match the expected position.
+      const existingChunks = await getChunkStableIdsAndPositions(conversationId, tx);
+      for (const chunk of existingChunks) {
+        if (!chunk.stableId) continue;
+        const expectedPos = expectedPositionMap.get(chunk.stableId);
+        if (expectedPos !== undefined && expectedPos !== chunk.position) {
+          await updateChunkPositionByStableId(chunk.stableId, expectedPos, tx);
         }
       }
     }
