@@ -27,6 +27,12 @@ import {
   buildStableId,
 } from "./conversation-chunker";
 import { chunkText } from "./uploadRoute";
+
+/** Truncate a single error message to avoid blowing up the DB column */
+function truncateError(msg: string, maxLen = 500): string {
+  if (msg.length <= maxLen) return msg;
+  return msg.slice(0, maxLen) + `… [truncated, ${msg.length} chars total]`;
+}
 import {
   createImportLog,
   updateImportLog,
@@ -125,7 +131,7 @@ export async function importConversationsJson(params: ImportParams): Promise<num
   runImport(params, importLogId, progress, startTime).catch((err) => {
     console.error(`[import-service] Fatal error in import ${importLogId}:`, err);
     progress.status = "failed";
-    progress.errors.push(err instanceof Error ? err.message : String(err));
+    progress.errors.push(truncateError(err instanceof Error ? err.message : String(err)));
     finalizeImport(importLogId, progress, startTime).catch(() => {});
   });
 
@@ -197,7 +203,7 @@ async function importSmallFile(
       await importSingleConversation(item, projectId, cortexUserId, importLogId, progress);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      progress.errors.push(`Conversation ${item.conversation_id}: ${msg}`);
+      progress.errors.push(truncateError(`Conversation ${item.conversation_id}: ${msg}`));
       console.error(`[import-service] Error importing ${item.conversation_id}:`, msg);
     }
     progress.conversationsProcessed++;
@@ -244,7 +250,7 @@ async function importLargeFileStreaming(
           await importSingleConversation(conv, projectId, cortexUserId, importLogId, progress);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          progress.errors.push(`Conversation ${conv.conversation_id}: ${msg}`);
+          progress.errors.push(truncateError(`Conversation ${conv.conversation_id}: ${msg}`));
           console.error(`[import-service] Error importing ${conv.conversation_id}:`, msg);
         }
         progress.conversationsProcessed++;
@@ -573,7 +579,9 @@ async function finalizeImport(
       messagesTotal: progress.messagesTotal,
       chunksCreated: progress.chunksCreated,
       chunksSkipped: progress.chunksSkipped,
-      errors: progress.errors.length > 0 ? JSON.stringify(progress.errors) : null,
+      errors: progress.errors.length > 0
+        ? JSON.stringify(progress.errors).slice(0, 4 * 1024 * 1024) // cap at 4MB (MEDIUMTEXT = 16MB)
+        : null,
       completedAt: new Date(),
       durationMs: Date.now() - startTime,
     });

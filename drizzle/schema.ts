@@ -261,7 +261,7 @@ export const conversations = mysqlTable("conversations", {
   createTime: timestamp("createTime"),                          // original conversation create_time
   updateTime: timestamp("updateTime"),                          // original conversation update_time
   status: mysqlEnum("status", ["importing", "done", "error"]).default("importing").notNull(),
-  rawMetadata: text("rawMetadata"),                             // audit-layer JSON (not indexed)
+  rawMetadata: mediumtext("rawMetadata"),                        // audit-layer JSON (not indexed)
   importLogId: int("importLogId"),                              // FK → import_logs
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -316,7 +316,7 @@ export const importLogs = mysqlTable("import_logs", {
   chunksSkipped: int("chunksSkipped").default(0).notNull(),
   // Errors and conflicts
   conflicts: text("conflicts"),                                   // JSON array of conflict records
-  errors: text("errors"),                                         // JSON array of error messages
+  errors: mediumtext("errors"),                                   // JSON array of error messages
   // Status & timing
   status: mysqlEnum("status", ["running", "completed", "failed", "cancelled"]).default("running").notNull(),
   startedAt: timestamp("startedAt").defaultNow().notNull(),
