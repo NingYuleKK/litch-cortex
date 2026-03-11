@@ -198,7 +198,8 @@ describe("embedding router - functional", () => {
     const trpc = caller(ctx);
     // Project 9999 doesn't exist, so no chunks
     const result = await trpc.embedding.generateForProject({ projectId: 9999 });
-    expect(result.generated).toBe(0);
+    expect(result.processed).toBe(0);
+    expect(result.done).toBe(true);
     expect(result.message).toContain("已有向量");
   });
 

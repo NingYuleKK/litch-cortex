@@ -19,6 +19,7 @@ import {
   // V0.8
   getEmbeddingCountByProjectV2, getChunksWithoutEmbeddingV2,
   getAllChunksByProjectV2, searchChunksByKeywordV2, getEmbeddingsByProjectV2,
+  getChunksByProjectCountV2, getChunksByProjectPageV2, getChunksWithoutEmbeddingV2Limited,
   getConversationsByProject, getConversationsByProjectCount, getConversationById,
   getMessagesByConversation, getChunksByConversation,
   getImportLogById, getImportLogsByProject,
@@ -209,12 +210,23 @@ export const appRouter = router({
   // ─── Chunk Management ─────────────────────────────────────────────
   chunk: router({
     listAll: protectedProcedure
-      .input(z.object({ projectId: z.number().optional() }).optional())
+      .input(z.object({
+        projectId: z.number().optional(),
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(200).default(50),
+      }).optional())
       .query(async ({ ctx, input }) => {
+        const page = input?.page ?? 1;
+        const pageSize = input?.pageSize ?? 50;
         if (input?.projectId) {
-          return getAllChunksByProjectV2(input.projectId);
+          const [items, total] = await Promise.all([
+            getChunksByProjectPageV2(input.projectId, page, pageSize),
+            getChunksByProjectCountV2(input.projectId),
+          ]);
+          return { items, total, page, pageSize };
         }
-        return getAllChunksByUser(ctx.user.id);
+        const items = await getAllChunksByUser(ctx.user.id);
+        return { items, total: items.length, page: 1, pageSize: items.length };
       }),
 
     get: protectedProcedure
@@ -1137,13 +1149,14 @@ export const appRouter = router({
         };
       }),
 
-    // Generate embeddings for all un-embedded chunks in a project
+    // Generate embeddings for a batch of un-embedded chunks in a project (max 200 per call)
     generateForProject: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .mutation(async ({ input }) => {
-        const chunksToEmbed = await getChunksWithoutEmbeddingV2(input.projectId);
+        const BATCH_LIMIT = 200;
+        const chunksToEmbed = await getChunksWithoutEmbeddingV2Limited(input.projectId, BATCH_LIMIT);
         if (chunksToEmbed.length === 0) {
-          return { generated: 0, message: "所有分段已有向量，无需重新生成。" };
+          return { processed: 0, remaining: 0, done: true, message: "所有分段已有向量，无需重新生成。" };
         }
 
         // Truncate long texts to avoid token limits (max ~8000 chars per chunk for embedding)
@@ -1152,6 +1165,7 @@ export const appRouter = router({
         try {
           const results = await generateEmbeddingsBatch(texts);
 
+          // Write to DB immediately per batch
           const embeddingData = results.map((r, idx) => ({
             chunkId: chunksToEmbed[idx].id,
             embedding: JSON.stringify(r.embedding),
@@ -1161,11 +1175,15 @@ export const appRouter = router({
 
           await insertChunkEmbeddingsBatch(embeddingData);
 
+          // Check how many remain after this batch
+          const counts = await getEmbeddingCountByProjectV2(input.projectId);
+          const remaining = counts.total - counts.withEmbedding;
+
           return {
-            generated: results.length,
-            model: results[0]?.model || "unknown",
-            dimensions: results[0]?.dimensions || 0,
-            message: `已为 ${results.length} 个分段生成向量。`,
+            processed: results.length,
+            remaining,
+            done: remaining === 0,
+            message: `已为 ${results.length} 个分段生成向量，剩余 ${remaining} 个。`,
           };
         } catch (err: any) {
           throw new Error(`Embedding 生成失败: ${err.message}`);
