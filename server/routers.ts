@@ -5,20 +5,21 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import {
   createDocument, updateDocument, getDocumentsByUser, getDocumentsByProject, getDocumentById,
-  insertChunks, getChunksByDocument, getAllChunksByUser, getAllChunksByProject, getChunkById,
+  insertChunks, getChunksByDocument, getAllChunksByUser, getChunkById,
   findOrCreateTopic, getAllTopicsWithCount, getTopicsByProject, getTopicById, getChunksByTopic, getChunksByTopicAndProject,
   linkChunkToTopic, getSummaryByTopic, upsertSummary,
   createProject, getProjectsByUser, getProjectsByCortexUser, getProjectById, updateProject,
-  searchChunksByKeyword,
   insertMergedChunks, getMergedChunksByTopic, getMergedChunksByProject,
   deleteMergedChunksByTopic, hasMergedChunksForTopic,
   getActiveLlmConfig, upsertLlmConfig,
   getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
   createTopicConversation, getTopicConversation, getConversationsByTopic, updateTopicConversation, deleteTopicConversation,
-  insertChunkEmbedding, insertChunkEmbeddingsBatch, getEmbeddingsByProject,
+  insertChunkEmbedding, insertChunkEmbeddingsBatch,
   getActiveEmbeddingConfig, upsertEmbeddingConfig,
   // V0.8
   getEmbeddingCountByProjectV2, getChunksWithoutEmbeddingV2,
+  getAllChunksByProjectV2, searchChunksByKeywordV2, getEmbeddingsByProjectV2,
+  getChunksByProjectCountV2, getChunksByProjectPageV2, getChunksWithoutEmbeddingV2Limited,
   getConversationsByProject, getConversationsByProjectCount, getConversationById,
   getMessagesByConversation, getChunksByConversation,
   getImportLogById, getImportLogsByProject,
@@ -209,12 +210,23 @@ export const appRouter = router({
   // ─── Chunk Management ─────────────────────────────────────────────
   chunk: router({
     listAll: protectedProcedure
-      .input(z.object({ projectId: z.number().optional() }).optional())
+      .input(z.object({
+        projectId: z.number().optional(),
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(200).default(50),
+      }).optional())
       .query(async ({ ctx, input }) => {
+        const page = input?.page ?? 1;
+        const pageSize = input?.pageSize ?? 50;
         if (input?.projectId) {
-          return getAllChunksByProject(input.projectId);
+          const [items, total] = await Promise.all([
+            getChunksByProjectPageV2(input.projectId, page, pageSize),
+            getChunksByProjectCountV2(input.projectId),
+          ]);
+          return { items, total, page, pageSize };
         }
-        return getAllChunksByUser(ctx.user.id);
+        const items = await getAllChunksByUser(ctx.user.id);
+        return { items, total: items.length, page: 1, pageSize: items.length };
       }),
 
     get: protectedProcedure
@@ -630,7 +642,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         // Search original chunks by keyword
-        const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+        const matchedChunks = await searchChunksByKeywordV2(input.projectId, input.query);
 
         if (matchedChunks.length === 0) {
           return {
@@ -1137,13 +1149,14 @@ export const appRouter = router({
         };
       }),
 
-    // Generate embeddings for all un-embedded chunks in a project
+    // Generate embeddings for a batch of un-embedded chunks in a project (max 200 per call)
     generateForProject: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .mutation(async ({ input }) => {
-        const chunksToEmbed = await getChunksWithoutEmbeddingV2(input.projectId);
+        const BATCH_LIMIT = 200;
+        const chunksToEmbed = await getChunksWithoutEmbeddingV2Limited(input.projectId, BATCH_LIMIT);
         if (chunksToEmbed.length === 0) {
-          return { generated: 0, message: "所有分段已有向量，无需重新生成。" };
+          return { processed: 0, remaining: 0, done: true, message: "所有分段已有向量，无需重新生成。" };
         }
 
         // Truncate long texts to avoid token limits (max ~8000 chars per chunk for embedding)
@@ -1152,6 +1165,7 @@ export const appRouter = router({
         try {
           const results = await generateEmbeddingsBatch(texts);
 
+          // Write to DB immediately per batch
           const embeddingData = results.map((r, idx) => ({
             chunkId: chunksToEmbed[idx].id,
             embedding: JSON.stringify(r.embedding),
@@ -1161,11 +1175,15 @@ export const appRouter = router({
 
           await insertChunkEmbeddingsBatch(embeddingData);
 
+          // Check how many remain after this batch
+          const counts = await getEmbeddingCountByProjectV2(input.projectId);
+          const remaining = counts.total - counts.withEmbedding;
+
           return {
-            generated: results.length,
-            model: results[0]?.model || "unknown",
-            dimensions: results[0]?.dimensions || 0,
-            message: `已为 ${results.length} 个分段生成向量。`,
+            processed: results.length,
+            remaining,
+            done: remaining === 0,
+            message: `已为 ${results.length} 个分段生成向量，剩余 ${remaining} 个。`,
           };
         } catch (err: any) {
           throw new Error(`Embedding 生成失败: ${err.message}`);
@@ -1229,11 +1247,11 @@ export const appRouter = router({
         }
 
         // 2. Get all embeddings for the project
-        const projectEmbeddings = await getEmbeddingsByProject(input.projectId);
+        const projectEmbeddings = await getEmbeddingsByProjectV2(input.projectId);
 
         if (projectEmbeddings.length === 0) {
           // No embeddings, fallback to keyword search
-          const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+          const matchedChunks = await searchChunksByKeywordV2(input.projectId, input.query);
           if (matchedChunks.length === 0) {
             return {
               title: input.query,
@@ -1283,26 +1301,17 @@ export const appRouter = router({
           };
         }
 
-        // 5. Fetch full chunk data for top results
-        const chunkIds = topResults.map(r => r.chunkId);
-        const chunkDataMap = new Map<number, any>();
-        for (const id of chunkIds) {
-          const chunk = await getChunkById(id);
-          if (chunk) chunkDataMap.set(id, chunk);
-        }
-
-        const topChunks = topResults
-          .filter(r => chunkDataMap.has(r.chunkId))
-          .map(r => {
-            const chunk = chunkDataMap.get(r.chunkId)!;
-            return {
-              id: chunk.id,
-              documentId: chunk.documentId,
-              content: chunk.content,
-              filename: (chunk as any).filename || `doc:${chunk.documentId}`,
-              similarity: Math.round(r.similarity * 10000) / 10000,
-            };
-          });
+        // 5. Build top chunks directly from embedding results (which already carry content + filename)
+        const topChunks = topResults.map(r => {
+          const emb = r.embedding;
+          return {
+            id: emb.chunkId,
+            documentId: emb.documentId,
+            content: emb.content,
+            filename: emb.filename || (emb.documentId ? `doc:${emb.documentId}` : `对话:${emb.conversationId}`),
+            similarity: Math.round(r.similarity * 10000) / 10000,
+          };
+        });
 
         // 6. Build LLM synthesis prompt
         const chunksText = topChunks.map((c, i) =>

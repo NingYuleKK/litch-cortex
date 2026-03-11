@@ -85,6 +85,13 @@
       "when": 1773054387081,
       "tag": "0011_complex_amphibian",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1773219588506,
+      "tag": "0012_yummy_firebrand",
+      "breakpoints": true
     }
   ]
 }
