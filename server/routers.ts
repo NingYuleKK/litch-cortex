@@ -1283,26 +1283,17 @@ export const appRouter = router({
           };
         }
 
-        // 5. Fetch full chunk data for top results
-        const chunkIds = topResults.map(r => r.chunkId);
-        const chunkDataMap = new Map<number, any>();
-        for (const id of chunkIds) {
-          const chunk = await getChunkById(id);
-          if (chunk) chunkDataMap.set(id, chunk);
-        }
-
-        const topChunks = topResults
-          .filter(r => chunkDataMap.has(r.chunkId))
-          .map(r => {
-            const chunk = chunkDataMap.get(r.chunkId)!;
-            return {
-              id: chunk.id,
-              documentId: chunk.documentId,
-              content: chunk.content,
-              filename: (chunk as any).filename || (chunk.documentId ? `doc:${chunk.documentId}` : `对话:${chunk.conversationId}`),
-              similarity: Math.round(r.similarity * 10000) / 10000,
-            };
-          });
+        // 5. Build top chunks directly from embedding results (which already carry content + filename)
+        const topChunks = topResults.map(r => {
+          const emb = r.embedding;
+          return {
+            id: emb.chunkId,
+            documentId: emb.documentId,
+            content: emb.content,
+            filename: emb.filename || (emb.documentId ? `doc:${emb.documentId}` : `对话:${emb.conversationId}`),
+            similarity: Math.round(r.similarity * 10000) / 10000,
+          };
+        });
 
         // 6. Build LLM synthesis prompt
         const chunksText = topChunks.map((c, i) =>

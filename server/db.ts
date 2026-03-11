@@ -1365,6 +1365,8 @@ export async function getEmbeddingsByProjectV2(projectId: number) {
       createdAt: chunkEmbeddings.createdAt,
       documentId: chunks.documentId,
       conversationId: chunks.conversationId,
+      content: chunks.content,
+      filename: sql<string>`COALESCE(${documents.filename}, CONCAT('对话: ', ${conversations.title}))`.as("filename"),
     })
     .from(chunkEmbeddings)
     .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
