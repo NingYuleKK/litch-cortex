@@ -4,8 +4,8 @@
  * Accepts ChatGPT conversations.json via multipart/form-data.
  * Uses disk storage (not memory) to avoid OOM on large files.
  */
-import { Router } from "express";
-import multer from "multer";
+import { Router, type Request, type Response, type NextFunction } from "express";
+import multer, { MulterError } from "multer";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
@@ -21,7 +21,7 @@ const upload = multer({
       cb(null, `${unique}${path.extname(file.originalname)}`);
     },
   }),
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
+  limits: { fileSize: 1 * 1024 * 1024 * 1024 }, // 1GB
   fileFilter: (_req, file, cb) => {
     if (
       file.mimetype === "application/json" ||
@@ -37,10 +37,24 @@ const upload = multer({
 // ─── Router ─────────────────────────────────────────────────────
 const conversationUploadRouter = Router();
 
+// Multer error handler — returns 413 for file size limit
+function handleMulterError(err: Error, _req: Request, res: Response, next: NextFunction) {
+  if (err instanceof MulterError && err.code === "LIMIT_FILE_SIZE") {
+    res.status(413).json({ error: "文件超过 1GB 限制" });
+    return;
+  }
+  if (err) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  next();
+}
+
 conversationUploadRouter.post(
   "/api/upload/conversations",
   upload.single("file"),
-  async (req, res) => {
+  handleMulterError,
+  async (req: Request, res: Response) => {
     try {
       // 1. Authenticate (Cortex auth only — no Manus fallback)
       const cortexUser = await getCortexUser(req);

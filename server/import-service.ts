@@ -10,8 +10,10 @@
  */
 import { createReadStream } from "fs";
 import fs from "fs/promises";
-import { parser } from "stream-json";
-import { streamArray } from "stream-json/streamers/StreamArray";
+import StreamJsonPkg from "stream-json";
+import StreamArrayPkg from "stream-json/streamers/StreamArray.js";
+const { parser } = StreamJsonPkg;
+const { streamArray } = StreamArrayPkg;
 import {
   isChatGPTConversation,
   parseConversation,

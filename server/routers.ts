@@ -5,20 +5,20 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import {
   createDocument, updateDocument, getDocumentsByUser, getDocumentsByProject, getDocumentById,
-  insertChunks, getChunksByDocument, getAllChunksByUser, getAllChunksByProject, getChunkById,
+  insertChunks, getChunksByDocument, getAllChunksByUser, getChunkById,
   findOrCreateTopic, getAllTopicsWithCount, getTopicsByProject, getTopicById, getChunksByTopic, getChunksByTopicAndProject,
   linkChunkToTopic, getSummaryByTopic, upsertSummary,
   createProject, getProjectsByUser, getProjectsByCortexUser, getProjectById, updateProject,
-  searchChunksByKeyword,
   insertMergedChunks, getMergedChunksByTopic, getMergedChunksByProject,
   deleteMergedChunksByTopic, hasMergedChunksForTopic,
   getActiveLlmConfig, upsertLlmConfig,
   getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
   createTopicConversation, getTopicConversation, getConversationsByTopic, updateTopicConversation, deleteTopicConversation,
-  insertChunkEmbedding, insertChunkEmbeddingsBatch, getEmbeddingsByProject,
+  insertChunkEmbedding, insertChunkEmbeddingsBatch,
   getActiveEmbeddingConfig, upsertEmbeddingConfig,
   // V0.8
   getEmbeddingCountByProjectV2, getChunksWithoutEmbeddingV2,
+  getAllChunksByProjectV2, searchChunksByKeywordV2, getEmbeddingsByProjectV2,
   getConversationsByProject, getConversationsByProjectCount, getConversationById,
   getMessagesByConversation, getChunksByConversation,
   getImportLogById, getImportLogsByProject,
@@ -212,7 +212,7 @@ export const appRouter = router({
       .input(z.object({ projectId: z.number().optional() }).optional())
       .query(async ({ ctx, input }) => {
         if (input?.projectId) {
-          return getAllChunksByProject(input.projectId);
+          return getAllChunksByProjectV2(input.projectId);
         }
         return getAllChunksByUser(ctx.user.id);
       }),
@@ -630,7 +630,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         // Search original chunks by keyword
-        const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+        const matchedChunks = await searchChunksByKeywordV2(input.projectId, input.query);
 
         if (matchedChunks.length === 0) {
           return {
@@ -1229,11 +1229,11 @@ export const appRouter = router({
         }
 
         // 2. Get all embeddings for the project
-        const projectEmbeddings = await getEmbeddingsByProject(input.projectId);
+        const projectEmbeddings = await getEmbeddingsByProjectV2(input.projectId);
 
         if (projectEmbeddings.length === 0) {
           // No embeddings, fallback to keyword search
-          const matchedChunks = await searchChunksByKeyword(input.projectId, input.query);
+          const matchedChunks = await searchChunksByKeywordV2(input.projectId, input.query);
           if (matchedChunks.length === 0) {
             return {
               title: input.query,
@@ -1299,7 +1299,7 @@ export const appRouter = router({
               id: chunk.id,
               documentId: chunk.documentId,
               content: chunk.content,
-              filename: (chunk as any).filename || `doc:${chunk.documentId}`,
+              filename: (chunk as any).filename || (chunk.documentId ? `doc:${chunk.documentId}` : `对话:${chunk.conversationId}`),
               similarity: Math.round(r.similarity * 10000) / 10000,
             };
           });

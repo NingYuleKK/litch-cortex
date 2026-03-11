@@ -1285,3 +1285,95 @@ export async function getChunksWithoutEmbeddingV2(projectId: number): Promise<Ar
     )
     .orderBy(asc(chunks.id));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// V2 Query Helpers — cover both document and conversation chunks
+// ═══════════════════════════════════════════════════════════════════
+
+export async function getAllChunksByProjectV2(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      conversationId: chunks.conversationId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      filename: sql<string>`COALESCE(${documents.filename}, CONCAT('对话: ', ${conversations.title}))`.as("filename"),
+    })
+    .from(chunks)
+    .leftJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
+    .where(
+      or(
+        eq(documents.projectId, projectId),
+        eq(conversations.projectId, projectId),
+      ),
+    )
+    .orderBy(desc(chunks.createdAt));
+}
+
+export async function searchChunksByKeywordV2(projectId: number, keyword: string, limit = 30) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const terms = keyword.trim().split(/\s+/).filter(t => t.length > 0);
+  if (terms.length === 0) return [];
+
+  const conditions = terms.map(term => like(chunks.content, `%${term}%`));
+
+  return db
+    .select({
+      id: chunks.id,
+      documentId: chunks.documentId,
+      conversationId: chunks.conversationId,
+      content: chunks.content,
+      position: chunks.position,
+      tokenCount: chunks.tokenCount,
+      createdAt: chunks.createdAt,
+      filename: sql<string>`COALESCE(${documents.filename}, CONCAT('对话: ', ${conversations.title}))`.as("filename"),
+    })
+    .from(chunks)
+    .leftJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
+    .where(
+      and(
+        or(
+          eq(documents.projectId, projectId),
+          eq(conversations.projectId, projectId),
+        ),
+        or(...conditions),
+      ),
+    )
+    .orderBy(desc(chunks.createdAt))
+    .limit(limit);
+}
+
+export async function getEmbeddingsByProjectV2(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: chunkEmbeddings.id,
+      chunkId: chunkEmbeddings.chunkId,
+      embedding: chunkEmbeddings.embedding,
+      model: chunkEmbeddings.model,
+      dimensions: chunkEmbeddings.dimensions,
+      createdAt: chunkEmbeddings.createdAt,
+      documentId: chunks.documentId,
+      conversationId: chunks.conversationId,
+    })
+    .from(chunkEmbeddings)
+    .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
+    .leftJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
+    .where(
+      or(
+        eq(documents.projectId, projectId),
+        eq(conversations.projectId, projectId),
+      ),
+    );
+}
