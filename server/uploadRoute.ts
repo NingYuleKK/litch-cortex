@@ -210,6 +210,7 @@ uploadRouter.post(
         // 7. Insert chunks
         const chunkData = textChunks.map((content, idx) => ({
           documentId: docId,
+          projectId,
           content,
           position: idx,
           tokenCount: content.length,

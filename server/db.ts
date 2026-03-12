@@ -2,27 +2,32 @@ import { eq, sql, desc, asc, and, inArray, like, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser, users,
-  cortexUsers, InsertCortexUser, CortexUser,
-  projects, InsertProject, Project,
-  documents, InsertDocument, Document,
+  cortexUsers,
+  projects,
+  documents, InsertDocument,
   chunks, InsertChunk, Chunk,
-  topics, InsertTopic, Topic,
-  chunkTopics, InsertChunkTopic,
-  summaries, InsertSummary, Summary,
-  mergedChunks, InsertMergedChunk, MergedChunk,
-  llmConfig, InsertLlmConfig, LlmConfig,
-  promptTemplates, InsertPromptTemplate, PromptTemplate,
-  topicConversations, InsertTopicConversation, TopicConversation,
-  chunkEmbeddings, InsertChunkEmbedding, ChunkEmbedding,
-  embeddingConfig, InsertEmbeddingConfig, EmbeddingConfig,
+  topics,
+  chunkTopics,
+  summaries,
+  mergedChunks, InsertMergedChunk,
+  llmConfig, LlmConfig,
+  promptTemplates, PromptTemplate,
+  topicConversations, TopicConversation,
+  chunkEmbeddings, ChunkEmbedding,
+  embeddingConfig, EmbeddingConfig,
   // V0.8
   conversations, InsertConversation, Conversation,
   conversationMessages, InsertConversationMessage, ConversationMessage,
   importLogs, InsertImportLog, ImportLog,
+  // V0.9
+  jobs, InsertJob, Job,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
+
+// Type for db or transaction instance (both support the same query interface)
+export type DbOrTx = NonNullable<ReturnType<typeof drizzle>>;
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -40,10 +45,10 @@ export async function getDb() {
  * Run a function inside a database transaction.
  * If the callback throws, the transaction is rolled back automatically.
  */
-export async function withTransaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(fn: (tx: DbOrTx) => Promise<T>): Promise<T> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return db.transaction(fn);
+  return db.transaction(fn as any);
 }
 
 // ─── User Helpers (Manus OAuth - kept for compatibility) ───────────
@@ -299,11 +304,11 @@ export async function findOrCreateTopic(label: string, description?: string): Pr
 
   const existing = await db.select().from(topics).where(eq(topics.label, label)).limit(1);
   if (existing.length > 0) {
-    await db.update(topics).set({ weight: sql`${topics.weight} + 1` }).where(eq(topics.id, existing[0].id));
+    // V0.9: weight is now a derived value (COUNT of linked chunks), no longer incremented here
     return existing[0].id;
   }
 
-  const result = await db.insert(topics).values({ label, description, weight: 1 });
+  const result = await db.insert(topics).values({ label, description, weight: 0 });
   return result[0].insertId;
 }
 
@@ -315,32 +320,32 @@ export async function getAllTopicsWithCount() {
       id: topics.id,
       label: topics.label,
       description: topics.description,
-      weight: topics.weight,
+      weight: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("weight"),
       createdAt: topics.createdAt,
-      chunkCount: sql<number>`COUNT(${chunkTopics.chunkId})`.as("chunkCount"),
+      chunkCount: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("chunkCount"),
     })
     .from(topics)
     .leftJoin(chunkTopics, eq(topics.id, chunkTopics.topicId))
     .groupBy(topics.id)
-    .orderBy(desc(topics.weight));
+    .orderBy(desc(sql`chunkCount`));
 }
 
 export async function getTopicsByProject(projectId: number) {
   const db = await getDb();
   if (!db) return [];
 
+  // V0.9: simplified with chunks.projectId — covers both document and conversation chunks
   const projectChunkIds = db
     .select({ id: chunks.id })
     .from(chunks)
-    .innerJoin(documents, eq(chunks.documentId, documents.id))
-    .where(eq(documents.projectId, projectId));
+    .where(eq(chunks.projectId, projectId));
 
   return db
     .select({
       id: topics.id,
       label: topics.label,
       description: topics.description,
-      weight: topics.weight,
+      weight: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("weight"),
       createdAt: topics.createdAt,
       chunkCount: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("chunkCount"),
     })
@@ -365,16 +370,18 @@ export async function getChunksByTopic(topicId: number) {
     .select({
       id: chunks.id,
       documentId: chunks.documentId,
+      conversationId: chunks.conversationId,
       content: chunks.content,
       position: chunks.position,
       tokenCount: chunks.tokenCount,
       createdAt: chunks.createdAt,
       relevanceScore: chunkTopics.relevanceScore,
-      filename: documents.filename,
+      filename: sql<string>`COALESCE(${documents.filename}, CONCAT('对话: ', ${conversations.title}))`.as("filename"),
     })
     .from(chunkTopics)
     .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
-    .innerJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
     .where(eq(chunkTopics.topicId, topicId))
     .orderBy(desc(chunkTopics.relevanceScore));
 }
@@ -386,17 +393,19 @@ export async function getChunksByTopicAndProject(topicId: number, projectId: num
     .select({
       id: chunks.id,
       documentId: chunks.documentId,
+      conversationId: chunks.conversationId,
       content: chunks.content,
       position: chunks.position,
       tokenCount: chunks.tokenCount,
       createdAt: chunks.createdAt,
       relevanceScore: chunkTopics.relevanceScore,
-      filename: documents.filename,
+      filename: sql<string>`COALESCE(${documents.filename}, CONCAT('对话: ', ${conversations.title}))`.as("filename"),
     })
     .from(chunkTopics)
     .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
-    .innerJoin(documents, eq(chunks.documentId, documents.id))
-    .where(and(eq(chunkTopics.topicId, topicId), eq(documents.projectId, projectId)))
+    .leftJoin(documents, eq(chunks.documentId, documents.id))
+    .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
+    .where(and(eq(chunkTopics.topicId, topicId), eq(chunks.projectId, projectId)))
     .orderBy(desc(chunkTopics.relevanceScore));
 }
 
@@ -405,7 +414,19 @@ export async function getChunksByTopicAndProject(topicId: number, projectId: num
 export async function linkChunkToTopic(chunkId: number, topicId: number, relevanceScore: number = 1.0) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.insert(chunkTopics).values({ chunkId, topicId, relevanceScore });
+  // V0.9: idempotent with unique constraint — update relevanceScore on duplicate
+  await db.insert(chunkTopics).values({ chunkId, topicId, relevanceScore })
+    .onDuplicateKeyUpdate({ set: { relevanceScore } });
+}
+
+/**
+ * Delete all topic links for a specific chunk.
+ * Used by topic extraction "delete + rewrite" idempotency strategy (M2).
+ */
+export async function deleteChunkTopicsByChunkId(chunkId: number, tx?: DbOrTx): Promise<number> {
+  const db = await resolveDb(tx);
+  const result = await db.delete(chunkTopics).where(eq(chunkTopics.chunkId, chunkId));
+  return (result[0] as any).affectedRows ?? 0;
 }
 
 // ─── Summary Helpers ────────────────────────────────────────────────
@@ -924,9 +945,6 @@ Output in Markdown format.`,
 // V0.8 — Conversation Import Helpers
 // ═══════════════════════════════════════════════════════════════════
 
-// Type for db or transaction instance (both support the same query interface)
-type DbOrTx = NonNullable<Awaited<ReturnType<typeof getDb>>>;
-
 async function resolveDb(tx?: DbOrTx): Promise<DbOrTx> {
   if (tx) return tx;
   const db = await getDb();
@@ -1057,6 +1075,7 @@ export async function getExistingMessageIds(conversationId: number): Promise<Map
 export async function insertChunksWithStableId(
   data: Array<{
     conversationId: number;
+    projectId: number;
     content: string;
     position: number;
     tokenCount: number;
@@ -1084,6 +1103,7 @@ export async function insertChunksWithStableId(
       const batch = toInsert.slice(i, i + 100).map(d => ({
         documentId: null,
         conversationId: d.conversationId,
+        projectId: d.projectId,
         content: d.content,
         position: d.position,
         tokenCount: d.tokenCount,
@@ -1219,41 +1239,17 @@ export async function getEmbeddingCountByProjectV2(projectId: number): Promise<{
   const db = await getDb();
   if (!db) return { total: 0, withEmbedding: 0 };
 
-  // Count ALL chunks in project: document-sourced + conversation-sourced
+  // V0.9: simplified with chunks.projectId
   const totalResult = await db
     .select({ count: sql<number>`COUNT(*)`.as("count") })
     .from(chunks)
-    .where(
-      or(
-        // Document-sourced chunks
-        inArray(
-          chunks.documentId,
-          db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
-        ),
-        // Conversation-sourced chunks
-        inArray(
-          chunks.conversationId,
-          db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
-        ),
-      ),
-    );
+    .where(eq(chunks.projectId, projectId));
 
   const embeddedResult = await db
     .select({ count: sql<number>`COUNT(DISTINCT ${chunkEmbeddings.chunkId})`.as("count") })
     .from(chunkEmbeddings)
     .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
-    .where(
-      or(
-        inArray(
-          chunks.documentId,
-          db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
-        ),
-        inArray(
-          chunks.conversationId,
-          db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
-        ),
-      ),
-    );
+    .where(eq(chunks.projectId, projectId));
 
   return {
     total: totalResult[0]?.count || 0,
@@ -1271,16 +1267,7 @@ export async function getChunksWithoutEmbeddingV2(projectId: number): Promise<Ar
     .where(
       and(
         sql`${chunkEmbeddings.id} IS NULL`,
-        or(
-          inArray(
-            chunks.documentId,
-            db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
-          ),
-          inArray(
-            chunks.conversationId,
-            db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
-          ),
-        ),
+        eq(chunks.projectId, projectId),
       ),
     )
     .orderBy(asc(chunks.id));
@@ -1307,12 +1294,7 @@ export async function getAllChunksByProjectV2(projectId: number) {
     .from(chunks)
     .leftJoin(documents, eq(chunks.documentId, documents.id))
     .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
-    .where(
-      or(
-        eq(documents.projectId, projectId),
-        eq(conversations.projectId, projectId),
-      ),
-    )
+    .where(eq(chunks.projectId, projectId))
     .orderBy(desc(chunks.createdAt));
 }
 
@@ -1322,14 +1304,7 @@ export async function getChunksByProjectCountV2(projectId: number): Promise<numb
   const result = await db
     .select({ count: sql<number>`COUNT(*)`.as("count") })
     .from(chunks)
-    .leftJoin(documents, eq(chunks.documentId, documents.id))
-    .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
-    .where(
-      or(
-        eq(documents.projectId, projectId),
-        eq(conversations.projectId, projectId),
-      ),
-    );
+    .where(eq(chunks.projectId, projectId));
   return result[0]?.count || 0;
 }
 
@@ -1351,12 +1326,7 @@ export async function getChunksByProjectPageV2(projectId: number, page: number, 
     .from(chunks)
     .leftJoin(documents, eq(chunks.documentId, documents.id))
     .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
-    .where(
-      or(
-        eq(documents.projectId, projectId),
-        eq(conversations.projectId, projectId),
-      ),
-    )
+    .where(eq(chunks.projectId, projectId))
     .orderBy(desc(chunks.createdAt))
     .limit(pageSize)
     .offset(offset);
@@ -1372,16 +1342,7 @@ export async function getChunksWithoutEmbeddingV2Limited(projectId: number, limi
     .where(
       and(
         sql`${chunkEmbeddings.id} IS NULL`,
-        or(
-          inArray(
-            chunks.documentId,
-            db.select({ id: documents.id }).from(documents).where(eq(documents.projectId, projectId)),
-          ),
-          inArray(
-            chunks.conversationId,
-            db.select({ id: conversations.id }).from(conversations).where(eq(conversations.projectId, projectId)),
-          ),
-        ),
+        eq(chunks.projectId, projectId),
       ),
     )
     .orderBy(asc(chunks.id))
@@ -1413,10 +1374,7 @@ export async function searchChunksByKeywordV2(projectId: number, keyword: string
     .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
     .where(
       and(
-        or(
-          eq(documents.projectId, projectId),
-          eq(conversations.projectId, projectId),
-        ),
+        eq(chunks.projectId, projectId),
         or(...conditions),
       ),
     )
@@ -1444,10 +1402,205 @@ export async function getEmbeddingsByProjectV2(projectId: number) {
     .innerJoin(chunks, eq(chunkEmbeddings.chunkId, chunks.id))
     .leftJoin(documents, eq(chunks.documentId, documents.id))
     .leftJoin(conversations, eq(chunks.conversationId, conversations.id))
+    .where(eq(chunks.projectId, projectId));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// V0.9 — Job Queue DB Helpers
+// ═══════════════════════════════════════════════════════════════════
+
+export async function createJob(data: InsertJob): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(jobs).values(data);
+  return result[0].insertId;
+}
+
+export async function getJobById(id: number): Promise<Job | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getJobsByProject(projectId: number, limit = 20): Promise<Job[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(jobs)
+    .where(eq(jobs.projectId, projectId))
+    .orderBy(desc(jobs.createdAt))
+    .limit(limit);
+}
+
+export async function updateJob(id: number, data: Partial<InsertJob>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(jobs).set(data).where(eq(jobs.id, id));
+}
+
+/**
+ * Atomic claim: pick the oldest pending job and set it to running in one UPDATE.
+ * Returns the claimed job or undefined if none available. (S2: atomic claim)
+ */
+export async function claimNextPendingJob(): Promise<Job | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  // Find oldest pending job
+  const pending = await db.select().from(jobs)
+    .where(eq(jobs.status, "pending"))
+    .orderBy(asc(jobs.createdAt))
+    .limit(1);
+
+  if (pending.length === 0) return undefined;
+
+  const job = pending[0];
+  // Atomic UPDATE with status check to prevent race conditions
+  const result = await db.update(jobs)
+    .set({
+      status: "running",
+      startedAt: sql`NOW()`,
+      attempts: sql`${jobs.attempts} + 1`,
+    })
+    .where(and(eq(jobs.id, job.id), eq(jobs.status, "pending")));
+
+  // If no rows affected, another worker claimed it (shouldn't happen in single-process, but safe)
+  if ((result[0] as any).affectedRows === 0) return undefined;
+
+  // Return the updated job
+  return getJobById(job.id);
+}
+
+/**
+ * Check if there's an active (pending/running) job of the same type for a project.
+ * Used for dedup before submitting new jobs. (S1)
+ */
+export async function getActiveJobByTypeAndProject(
+  type: string,
+  projectId: number,
+): Promise<Job | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(jobs)
+    .where(and(
+      eq(jobs.projectId, projectId),
+      eq(jobs.type, type),
+      inArray(jobs.status, ["pending", "running"]),
+    ))
+    .limit(1);
+  return result[0];
+}
+
+/**
+ * Reset any jobs stuck in "running" state back to "pending" (crash recovery).
+ */
+export async function resetRunningJobs(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.update(jobs)
+    .set({ status: "pending" })
+    .where(eq(jobs.status, "running"));
+  return (result[0] as any).affectedRows ?? 0;
+}
+
+/**
+ * Get latest job of a given type for a project.
+ */
+export async function getLatestJobByType(projectId: number, type: string): Promise<Job | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(jobs)
+    .where(and(eq(jobs.projectId, projectId), eq(jobs.type, type)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(1);
+  return result[0];
+}
+
+/**
+ * Get counts for observability: total chunks with topic links for a project.
+ */
+export async function getTopicCoverageByProject(projectId: number): Promise<{ totalChunks: number; chunksWithTopics: number; topicCount: number }> {
+  const db = await getDb();
+  if (!db) return { totalChunks: 0, chunksWithTopics: 0, topicCount: 0 };
+
+  const totalResult = await db.select({ count: sql<number>`COUNT(*)`.as("count") })
+    .from(chunks).where(eq(chunks.projectId, projectId));
+
+  const withTopicsResult = await db
+    .select({ count: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("count") })
+    .from(chunkTopics)
+    .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
+    .where(eq(chunks.projectId, projectId));
+
+  const topicCountResult = await db
+    .select({ count: sql<number>`COUNT(DISTINCT ${chunkTopics.topicId})`.as("count") })
+    .from(chunkTopics)
+    .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
+    .where(eq(chunks.projectId, projectId));
+
+  return {
+    totalChunks: totalResult[0]?.count || 0,
+    chunksWithTopics: withTopicsResult[0]?.count || 0,
+    topicCount: topicCountResult[0]?.count || 0,
+  };
+}
+
+/**
+ * Get latest import log for a project.
+ */
+export async function getLatestImportLog(projectId: number): Promise<ImportLog | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(importLogs)
+    .where(eq(importLogs.projectId, projectId))
+    .orderBy(desc(importLogs.createdAt))
+    .limit(1);
+  return result[0];
+}
+
+/**
+ * Get message count for a project (across all conversations).
+ */
+export async function getMessageCountByProject(projectId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: sql<number>`COUNT(*)`.as("count") })
+    .from(conversationMessages)
+    .innerJoin(conversations, eq(conversationMessages.conversationId, conversations.id))
+    .where(eq(conversations.projectId, projectId));
+  return result[0]?.count || 0;
+}
+
+/**
+ * Get document count for a project.
+ */
+export async function getDocumentCountByProject(projectId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ count: sql<number>`COUNT(*)`.as("count") })
+    .from(documents)
+    .where(eq(documents.projectId, projectId));
+  return result[0]?.count || 0;
+}
+
+/**
+ * Get chunks that have no topic links for a project (for topic extraction).
+ */
+export async function getChunksWithoutTopicsByProject(projectId: number, limit = 200): Promise<Array<{ id: number; content: string }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({ id: chunks.id, content: chunks.content })
+    .from(chunks)
+    .leftJoin(chunkTopics, eq(chunks.id, chunkTopics.chunkId))
     .where(
-      or(
-        eq(documents.projectId, projectId),
-        eq(conversations.projectId, projectId),
+      and(
+        eq(chunks.projectId, projectId),
+        sql`${chunkTopics.id} IS NULL`,
       ),
-    );
+    )
+    .orderBy(asc(chunks.id))
+    .limit(limit);
 }
