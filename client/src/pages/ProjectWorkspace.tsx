@@ -26,7 +26,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   Upload, FileText, Tags, Brain, LogOut, PanelLeft,
   ChevronLeft, FolderOpen, Loader2, Sparkles, Shield, KeyRound,
-  MessageSquare,
+  MessageSquare, BarChart3,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState, useMemo } from "react";
 import { useLocation, useParams } from "wouter";
@@ -38,6 +38,7 @@ import TopicsPage from "./Topics";
 import TopicDetailPage from "./TopicDetail";
 import ExplorePage from "./Explore";
 import ConversationsPage from "./Conversations";
+import DataOverviewPage from "./DataOverview";
 import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -118,6 +119,7 @@ function WorkspaceContent({
     if (tab === "topics") return "topics";
     if (tab === "explore") return "explore";
     if (tab === "conversations") return "conversations";
+    if (tab === "overview") return "overview";
     return "upload";
   }, [tab, location]);
 
@@ -127,6 +129,7 @@ function WorkspaceContent({
     { icon: Tags, label: "话题列表", key: "topics", path: `/project/${projectId}/topics` },
     { icon: Sparkles, label: "话题探索", key: "explore", path: `/project/${projectId}/explore` },
     { icon: MessageSquare, label: "对话导入", key: "conversations", path: `/project/${projectId}/conversations` },
+    { icon: BarChart3, label: "数据概览", key: "overview", path: `/project/${projectId}/overview` },
   ];
 
   const activeMenuItem = menuItems.find(item => item.key === activeTab) || menuItems[0];
@@ -319,6 +322,7 @@ function WorkspaceContent({
           {activeTab === "topics" && <TopicsPage projectId={projectId} />}
           {activeTab === "explore" && <ExplorePage projectId={projectId} />}
           {activeTab === "conversations" && <ConversationsPage projectId={projectId} />}
+          {activeTab === "overview" && <DataOverviewPage projectId={projectId} />}
           {activeTab === "topic-detail" && topicIdFromUrl && (
             <TopicDetailPage projectId={projectId} topicId={topicIdFromUrl} />
           )}

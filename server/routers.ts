@@ -14,20 +14,26 @@ import {
   getActiveLlmConfig, upsertLlmConfig,
   getAllPromptTemplates, getPromptTemplateById, createPromptTemplate, updatePromptTemplate, deletePromptTemplate, seedPresetTemplates,
   createTopicConversation, getTopicConversation, getConversationsByTopic, updateTopicConversation, deleteTopicConversation,
-  insertChunkEmbedding, insertChunkEmbeddingsBatch,
+  insertChunkEmbeddingsBatch,
   getActiveEmbeddingConfig, upsertEmbeddingConfig,
   // V0.8
-  getEmbeddingCountByProjectV2, getChunksWithoutEmbeddingV2,
-  getAllChunksByProjectV2, searchChunksByKeywordV2, getEmbeddingsByProjectV2,
+  getEmbeddingCountByProjectV2,
+  searchChunksByKeywordV2, getEmbeddingsByProjectV2,
   getChunksByProjectCountV2, getChunksByProjectPageV2, getChunksWithoutEmbeddingV2Limited,
   getConversationsByProject, getConversationsByProjectCount, getConversationById,
   getMessagesByConversation, getChunksByConversation,
   getImportLogById, getImportLogsByProject,
+  // V0.9
+  getMessageCountByProject, getDocumentCountByProject,
+  getTopicCoverageByProject, getLatestImportLog, getLatestJobByType,
+  getJobsByProject,
+  deleteChunkTopicsByChunkId, getJobById,
 } from "./db";
 import { getImportProgress } from "./import-service";
 import { storagePut } from "./storage";
 import { callLLM } from "./llm-service";
-import { encodeApiKey, decodeApiKey, getProviderDefaults } from "./llm-service";
+import { submitJob, getJobProgress, cancelJob, retryJob } from "./job-queue";
+import { encodeApiKey, getProviderDefaults } from "./llm-service";
 import { generateEmbedding, generateEmbeddingsBatch, cosineSimilarity, getCurrentEmbeddingConfig } from "./embedding-service";
 import { nanoid } from "nanoid";
 
@@ -146,6 +152,91 @@ export const appRouter = router({
         await updateProject(id, data);
         return { success: true };
       }),
+
+    // V0.9: Data Overview dashboard
+    dataOverview: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => {
+        const [
+          conversationCount,
+          documentCount,
+          messageCount,
+          chunkCount,
+          embeddingCounts,
+          topicCoverage,
+          latestImport,
+          latestEmbeddingJob,
+          latestTopicJob,
+          recentJobs,
+        ] = await Promise.all([
+          getConversationsByProjectCount(input.projectId),
+          getDocumentCountByProject(input.projectId),
+          getMessageCountByProject(input.projectId),
+          getChunksByProjectCountV2(input.projectId),
+          getEmbeddingCountByProjectV2(input.projectId),
+          getTopicCoverageByProject(input.projectId),
+          getLatestImportLog(input.projectId),
+          getLatestJobByType(input.projectId, "embedding_generation"),
+          getLatestJobByType(input.projectId, "topic_extraction"),
+          getJobsByProject(input.projectId, 5),
+        ]);
+
+        return {
+          counts: {
+            conversations: conversationCount,
+            documents: documentCount,
+            messages: messageCount,
+            chunks: chunkCount,
+          },
+          coverage: {
+            embedding: {
+              total: embeddingCounts.total,
+              covered: embeddingCounts.withEmbedding,
+              percentage: embeddingCounts.total > 0
+                ? Math.round((embeddingCounts.withEmbedding / embeddingCounts.total) * 100)
+                : 0,
+            },
+            topic: {
+              total: topicCoverage.totalChunks,
+              covered: topicCoverage.chunksWithTopics,
+              topicCount: topicCoverage.topicCount,
+              percentage: topicCoverage.totalChunks > 0
+                ? Math.round((topicCoverage.chunksWithTopics / topicCoverage.totalChunks) * 100)
+                : 0,
+            },
+          },
+          latestTasks: {
+            import: latestImport ? {
+              status: latestImport.status,
+              completedAt: latestImport.completedAt,
+              filename: latestImport.filename,
+            } : null,
+            embedding: latestEmbeddingJob ? {
+              status: latestEmbeddingJob.status,
+              completedAt: latestEmbeddingJob.completedAt,
+              processedItems: latestEmbeddingJob.processedItems,
+              totalItems: latestEmbeddingJob.totalItems,
+            } : null,
+            topicExtraction: latestTopicJob ? {
+              status: latestTopicJob.status,
+              completedAt: latestTopicJob.completedAt,
+              processedItems: latestTopicJob.processedItems,
+              totalItems: latestTopicJob.totalItems,
+            } : null,
+          },
+          recentJobs: recentJobs.map((j) => ({
+            id: j.id,
+            type: j.type,
+            status: j.status,
+            totalItems: j.totalItems,
+            processedItems: j.processedItems,
+            percentage: j.totalItems > 0 ? Math.round((j.processedItems / j.totalItems) * 100) : 0,
+            createdAt: j.createdAt,
+            completedAt: j.completedAt,
+            lastError: j.lastError,
+          })),
+        };
+      }),
   }),
 
   // ─── Document Management ──────────────────────────────────────────
@@ -181,6 +272,7 @@ export const appRouter = router({
           const textChunks = chunkText(rawText);
           const chunkData = textChunks.map((content, idx) => ({
             documentId: docId,
+            projectId: input.projectId ?? null,
             content,
             position: idx,
             tokenCount: content.length,
@@ -291,6 +383,9 @@ export const appRouter = router({
         const parsed = JSON.parse(content);
         const extractedTopics: { label: string; topicId: number; relevance: number }[] = [];
 
+        // P1-5: Delete old chunk_topics before inserting new ones (M2 idempotency)
+        await deleteChunkTopicsByChunkId(input.chunkId);
+
         for (const t of parsed.topics) {
           const topicId = await findOrCreateTopic(t.label);
           await linkChunkToTopic(input.chunkId, topicId, t.relevance);
@@ -303,9 +398,18 @@ export const appRouter = router({
 
   // ─── Batch Topic Extraction ───────────────────────────────────────
   extraction: router({
+    // V0.9: Submit topic extraction as a background job for the whole project
+    extractProject: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .mutation(async ({ input }) => {
+        const result = await submitJob(input.projectId, "topic_extraction");
+        return result;
+      }),
+
     extractDocument: protectedProcedure
       .input(z.object({ documentId: z.number() }))
       .mutation(async ({ input }) => {
+        const { extractTopicsFromChunk } = await import("./topic-extraction-service");
         const docChunks = await getChunksByDocument(input.documentId);
         if (docChunks.length === 0) throw new Error("No chunks found for document");
 
@@ -316,57 +420,13 @@ export const appRouter = router({
 
         for (const chunk of docChunks) {
           try {
-            const response = await callLLM({
-              taskType: "topic_extract",
-              messages: [
-                {
-        
-                  role: "system",
-                  content: `你是一个话题提取助手。请从给定的文本中提取 1-2 个核心话题标签。
-要求：
-- 每个话题标签用简短的中文短语表示（2-8个字）
-- 话题应该反映文本的核心主题
-- 返回 JSON 格式
+            const extractedTopics = await extractTopicsFromChunk(chunk);
 
-返回格式：
-{"topics": [{"label": "话题名称", "relevance": 0.9}]}`            },
-                { role: "user", content: chunk.content },
-              ],
-              response_format: {
-                type: "json_schema",
-                json_schema: {
-                  name: "topic_extraction",
-                  strict: true,
-                  schema: {
-                    type: "object",
-                    properties: {
-                      topics: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          properties: {
-                            label: { type: "string" },
-                            relevance: { type: "number" },
-                          },
-                          required: ["label", "relevance"],
-                          additionalProperties: false,
-                        },
-                      },
-                    },
-                    required: ["topics"],
-                    additionalProperties: false,
-                  },
-                },
-              },
-            });
-
-            const content = response.choices[0]?.message?.content;
-            if (content && typeof content === "string") {
-              const parsed = JSON.parse(content);
-              for (const t of parsed.topics) {
-                const topicId = await findOrCreateTopic(t.label);
-                await linkChunkToTopic(chunk.id, topicId, t.relevance);
-              }
+            // S-5/M2: Delete old associations, then rewrite
+            await deleteChunkTopicsByChunkId(chunk.id);
+            for (const t of extractedTopics) {
+              const topicId = await findOrCreateTopic(t.label);
+              await linkChunkToTopic(chunk.id, topicId, t.relevance);
             }
             processed++;
           } catch (err: any) {
@@ -1433,6 +1493,71 @@ export const appRouter = router({
         });
         return { success: true };
       }),
+
+    // V0.9: Submit embedding generation as a background job
+    submitGenerationJob: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .mutation(async ({ input }) => {
+        const result = await submitJob(input.projectId, "embedding_generation");
+        return result;
+      }),
+  }),
+
+  // ═══════════════════════════════════════════════════════════════════
+  // V0.9 — Job Queue
+  // ═══════════════════════════════════════════════════════════════════
+  job: router({
+    progress: protectedProcedure
+      .input(z.object({ jobId: z.number(), projectId: z.number() }))
+      .query(async ({ input }) => {
+        // P1-6: Verify job belongs to requested project
+        const job = await getJobById(input.jobId);
+        if (!job || job.projectId !== input.projectId) return null;
+        return getJobProgress(input.jobId);
+      }),
+
+    listByProject: protectedProcedure
+      .input(z.object({ projectId: z.number(), limit: z.number().default(10) }))
+      .query(async ({ input }) => {
+        const jobs = await getJobsByProject(input.projectId, input.limit);
+        return jobs.map((j) => ({
+          id: j.id,
+          type: j.type,
+          status: j.status,
+          projectId: j.projectId,
+          totalItems: j.totalItems,
+          processedItems: j.processedItems,
+          percentage: j.totalItems > 0 ? Math.round((j.processedItems / j.totalItems) * 100) : 0,
+          lastError: j.lastError,
+          createdAt: j.createdAt,
+          startedAt: j.startedAt,
+          completedAt: j.completedAt,
+        }));
+      }),
+
+    cancel: protectedProcedure
+      .input(z.object({ jobId: z.number(), projectId: z.number() }))
+      .mutation(async ({ input }) => {
+        // P1-6: Verify job belongs to requested project
+        const job = await getJobById(input.jobId);
+        if (!job || job.projectId !== input.projectId) {
+          throw new Error("Job not found or access denied");
+        }
+        const success = await cancelJob(input.jobId);
+        return { success };
+      }),
+
+    retry: protectedProcedure
+      .input(z.object({ jobId: z.number(), projectId: z.number() }))
+      .mutation(async ({ input }) => {
+        // P1-6: Verify job belongs to requested project
+        const job = await getJobById(input.jobId);
+        if (!job || job.projectId !== input.projectId) {
+          throw new Error("Job not found or access denied");
+        }
+        const newJobId = await retryJob(input.jobId);
+        return { newJobId };
+      }),
   }),
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1513,6 +1638,33 @@ export const appRouter = router({
       }))
       .query(async ({ input }) => {
         return getImportLogsByProject(input.projectId, input.limit);
+      }),
+
+    // V0.9: Get import diff report for a specific import log
+    importReport: protectedProcedure
+      .input(z.object({ importLogId: z.number() }))
+      .query(async ({ input }) => {
+        const log = await getImportLogById(input.importLogId);
+        if (!log) throw new Error("Import log not found");
+        let diffReport = null;
+        if (log.diffReport) {
+          try { diffReport = JSON.parse(log.diffReport); } catch { diffReport = null; }
+        }
+        return {
+          id: log.id,
+          status: log.status,
+          filename: log.filename,
+          conversationsTotal: log.conversationsTotal,
+          conversationsImported: log.conversationsImported,
+          conversationsSkipped: log.conversationsSkipped,
+          conversationsUpdated: log.conversationsUpdated,
+          messagesTotal: log.messagesTotal,
+          chunksCreated: log.chunksCreated,
+          chunksSkipped: log.chunksSkipped,
+          durationMs: log.durationMs,
+          completedAt: log.completedAt,
+          diffReport,
+        };
       }),
   }),
 });

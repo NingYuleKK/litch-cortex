@@ -3,8 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { FileText, Hash, Loader2, Layers, GitMerge, Tags, Zap, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
-import { useState, useCallback, useRef } from "react";
+import { FileText, Hash, Loader2, Layers, GitMerge, Tags, Zap, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight, RotateCcw, XCircle } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { keepPreviousData } from "@tanstack/react-query";
 
@@ -16,10 +16,8 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
   const [viewMode, setViewMode] = useState<ViewMode>("original");
   const [page, setPage] = useState(1);
 
-  // --- Bug 4: embedding generation progress state ---
-  const [embGenerating, setEmbGenerating] = useState(false);
-  const [embProgress, setEmbProgress] = useState<{ processed: number; total: number } | null>(null);
-  const abortRef = useRef(false);
+  // V0.9: Job-based embedding generation
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
 
   const { data: chunkData, isLoading } = trpc.chunk.listAll.useQuery(
     projectId ? { projectId, page, pageSize: PAGE_SIZE } : undefined,
@@ -38,37 +36,80 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
     { enabled: !!projectId }
   );
 
-  // Bug 4: loop-call generateForProject until done
-  const generateMutation = trpc.embedding.generateForProject.useMutation();
+  // V0.9: Job progress polling (2s interval, only when there's an active job)
+  const jobProgress = trpc.job.progress.useQuery(
+    { jobId: activeJobId!, projectId: projectId! },
+    {
+      enabled: !!activeJobId && !!projectId,
+      refetchInterval: (query) => {
+        const status = query.state.data?.status;
+        if (status === "completed" || status === "failed" || status === "cancelled") return false;
+        return 2000;
+      },
+    }
+  );
+
+  // S-1: Move toast/refetch to useEffect to avoid re-triggering on every render
+  const jobStatus = jobProgress.data?.status;
+  const prevJobStatusRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!activeJobId) return;
+    const prev = prevJobStatusRef.current;
+    prevJobStatusRef.current = jobStatus;
+    // Only fire when status transitions to a terminal state
+    if (prev === jobStatus) return;
+    if (jobStatus === "completed") {
+      toast.success(`向量生成完成，共处理 ${jobProgress.data?.processedItems ?? 0} 个分段。`);
+      embeddingStatus.refetch();
+    } else if (jobStatus === "failed") {
+      toast.error(`向量生成失败: ${jobProgress.data?.lastError ?? "未知错误"}`, { duration: 6000 });
+    }
+  }, [activeJobId, jobStatus, jobProgress.data, embeddingStatus]);
+
+  const submitJobMutation = trpc.embedding.submitGenerationJob.useMutation();
+  const cancelJobMutation = trpc.job.cancel.useMutation();
+  const retryJobMutation = trpc.job.retry.useMutation();
 
   const startEmbeddingGeneration = useCallback(async () => {
-    if (!projectId || embGenerating) return;
-    abortRef.current = false;
-    setEmbGenerating(true);
-    setEmbProgress({ processed: 0, total: embeddingStatus.data?.totalChunks ?? 0 });
-
-    let totalProcessed = embeddingStatus.data?.embeddedChunks ?? 0;
-    const totalChunks = embeddingStatus.data?.totalChunks ?? 0;
-
+    if (!projectId) return;
     try {
-      while (!abortRef.current) {
-        const result = await generateMutation.mutateAsync({ projectId });
-        totalProcessed += result.processed;
-        setEmbProgress({ processed: totalProcessed, total: totalChunks });
-
-        if (result.done) {
-          toast.success(`向量生成完成，共处理 ${totalProcessed} 个分段。`);
-          break;
-        }
+      const result = await submitJobMutation.mutateAsync({ projectId });
+      setActiveJobId(result.jobId);
+      if (result.deduplicated) {
+        toast.info("已有向量生成任务在运行中");
       }
     } catch (err: any) {
-      toast.error(`向量生成失败: ${err.message}`, { duration: 6000 });
-    } finally {
-      setEmbGenerating(false);
-      setEmbProgress(null);
-      embeddingStatus.refetch();
+      toast.error(`提交任务失败: ${err.message}`, { duration: 6000 });
     }
-  }, [projectId, embGenerating, embeddingStatus.data, generateMutation]);
+  }, [projectId, submitJobMutation]);
+
+  const handleCancelJob = useCallback(async () => {
+    if (!activeJobId) return;
+    try {
+      await cancelJobMutation.mutateAsync({ jobId: activeJobId, projectId: projectId! });
+      toast.info("任务已取消");
+      setActiveJobId(null);
+      embeddingStatus.refetch();
+    } catch (err: any) {
+      toast.error(`取消失败: ${err.message}`);
+    }
+  }, [activeJobId, cancelJobMutation, embeddingStatus]);
+
+  const handleRetryJob = useCallback(async () => {
+    if (!activeJobId) return;
+    try {
+      const result = await retryJobMutation.mutateAsync({ jobId: activeJobId, projectId: projectId! });
+      if (result.newJobId) {
+        setActiveJobId(result.newJobId);
+        toast.info("已重新提交任务");
+      }
+    } catch (err: any) {
+      toast.error(`重试失败: ${err.message}`);
+    }
+  }, [activeJobId, retryJobMutation]);
+
+  const embGenerating = !!activeJobId && (jobStatus === "pending" || jobStatus === "running");
+  const embJobFailed = !!activeJobId && jobStatus === "failed";
 
   if (isLoading) {
     return (
@@ -102,9 +143,9 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
   const embStatus = embeddingStatus.data;
   const embPercentage = embStatus?.percentage ?? 0;
 
-  // Bug 4: compute embedding progress percentage for display
-  const embGenPercent = embProgress
-    ? embProgress.total > 0 ? Math.round((embProgress.processed / embProgress.total) * 100) : 0
+  // V0.9: compute job progress percentage
+  const embGenPercent = embGenerating && jobProgress.data
+    ? jobProgress.data.percentage
     : embPercentage;
 
   return (
@@ -185,15 +226,19 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
                           : "border-border text-muted-foreground"
                       }`}
                     >
-                      {embGenerating && embProgress
-                        ? `${embProgress.processed}/${embProgress.total} (${embGenPercent}%)`
+                      {embGenerating && jobProgress.data
+                        ? `${jobProgress.data.processedItems}/${jobProgress.data.totalItems} (${embGenPercent}%)`
                         : `${embStatus.embeddedChunks}/${embStatus.totalChunks} (${embPercentage}%)`
                       }
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {embGenerating
-                      ? `正在生成向量... 已处理 ${embProgress?.processed ?? 0} / ${embProgress?.total ?? 0}`
+                    {embGenerating && jobProgress.data?.status === "pending"
+                      ? "排队中...等待其他任务完成"
+                      : embGenerating && jobProgress.data
+                      ? `正在生成向量... 已处理 ${jobProgress.data.processedItems} / ${jobProgress.data.totalItems}`
+                      : embJobFailed
+                      ? `生成失败: ${jobProgress.data?.lastError?.substring(0, 80) ?? "未知错误"}`
                       : embPercentage === 100
                       ? "所有分段已生成向量，语义搜索已就绪"
                       : embPercentage > 0
@@ -215,6 +260,28 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
                     />
                   </div>
                 )}
+                {embGenerating && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={handleCancelJob}
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                    取消
+                  </Button>
+                )}
+                {embJobFailed && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+                    onClick={handleRetryJob}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    重试
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   className="gap-1.5 bg-cyan-600 hover:bg-cyan-500 text-white"
@@ -224,7 +291,7 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
                   {embGenerating ? (
                     <>
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      生成中...
+                      {jobProgress.data?.status === "pending" ? "排队中..." : "生成中..."}
                     </>
                   ) : embPercentage === 100 ? (
                     <>

@@ -79,6 +79,7 @@ export const chunks = mysqlTable("chunks", {
   id: int("id").autoincrement().primaryKey(),
   documentId: int("documentId"),                         // nullable for conversation chunks
   conversationId: int("conversationId"),                 // V0.8: FK → conversations
+  projectId: int("projectId"),                           // V0.9: denormalized for fast single-table queries
   content: mediumtext("content").notNull(),
   position: int("position").notNull(),
   tokenCount: int("tokenCount").default(0).notNull(),
@@ -87,6 +88,7 @@ export const chunks = mysqlTable("chunks", {
 }, (table) => [
   uniqueIndex("chunks_stableId_idx").on(table.stableId),
   index("chunks_conversationId_idx").on(table.conversationId),
+  index("chunks_projectId_idx").on(table.projectId),
 ]);
 
 export type Chunk = typeof chunks.$inferSelect;
@@ -114,7 +116,9 @@ export const chunkTopics = mysqlTable("chunk_topics", {
   chunkId: int("chunkId").notNull(),
   topicId: int("topicId").notNull(),
   relevanceScore: float("relevanceScore").default(1.0).notNull(),
-});
+}, (table) => [
+  uniqueIndex("chunk_topics_chunk_topic_idx").on(table.chunkId, table.topicId),
+]);
 
 export type ChunkTopic = typeof chunkTopics.$inferSelect;
 export type InsertChunkTopic = typeof chunkTopics.$inferInsert;
@@ -317,6 +321,7 @@ export const importLogs = mysqlTable("import_logs", {
   // Errors and conflicts
   conflicts: text("conflicts"),                                   // JSON array of conflict records
   errors: mediumtext("errors"),                                   // JSON array of error messages
+  diffReport: mediumtext("diffReport"),                           // V0.9: JSON diff report (new/updated/skipped conversations)
   // Status & timing
   status: mysqlEnum("status", ["running", "completed", "failed", "cancelled"]).default("running").notNull(),
   startedAt: timestamp("startedAt").defaultNow().notNull(),
@@ -329,3 +334,37 @@ export const importLogs = mysqlTable("import_logs", {
 
 export type ImportLog = typeof importLogs.$inferSelect;
 export type InsertImportLog = typeof importLogs.$inferInsert;
+
+// ═══════════════════════════════════════════════════════════════════
+// V0.9 — Job Queue
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Background job queue — DB-backed, in-process scheduler.
+ * Supports embedding generation, topic extraction, and future task types.
+ */
+export const jobs = mysqlTable("jobs", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  type: varchar("type", { length: 64 }).notNull(),               // "embedding_generation" | "topic_extraction"
+  status: mysqlEnum("status", ["pending", "running", "completed", "failed", "cancelled"])
+    .default("pending").notNull(),
+  totalItems: int("totalItems").default(0).notNull(),
+  processedItems: int("processedItems").default(0).notNull(),
+  attempts: int("attempts").default(0).notNull(),
+  maxAttempts: int("maxAttempts").default(3).notNull(),
+  lastError: mediumtext("lastError"),
+  params: text("params"),                                         // JSON: job-specific parameters
+  result: mediumtext("result"),                                   // JSON: completion result
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  startedAt: timestamp("startedAt"),
+  completedAt: timestamp("completedAt"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("jobs_projectId_idx").on(table.projectId),
+  index("jobs_status_idx").on(table.status),
+  index("jobs_type_status_idx").on(table.type, table.status),
+]);
+
+export type Job = typeof jobs.$inferSelect;
+export type InsertJob = typeof jobs.$inferInsert;

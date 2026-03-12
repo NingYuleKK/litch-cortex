@@ -12,6 +12,7 @@ import uploadRouter from "../uploadRoute";
 import conversationUploadRouter from "../conversationUploadRoute";
 import authRouter, { seedDefaultAdmin } from "../authRoute";
 import { ENV } from "./env";
+import { startJobScheduler } from "../job-queue";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -73,6 +74,9 @@ async function startServer() {
   } catch (err) {
     console.warn("[Auth] Failed to seed default admin:", err);
   }
+
+  // Start background job scheduler (V0.9)
+  startJobScheduler();
 
   const preferredPort = parseInt(process.env.PORT || "3000");
   const port = await findAvailablePort(preferredPort);

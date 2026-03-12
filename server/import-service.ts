@@ -48,10 +48,29 @@ import {
   getChunkStableIdsAndPositions,
   withTransaction,
 } from "./db";
+import { submitJob } from "./job-queue";
 
 // ═══════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════
+
+export interface DiffEntry {
+  title: string;
+  changes?: string;  // e.g. "3 条新消息, 1 条修改"
+  reason?: string;    // for skipped
+  messageCount?: number;
+}
+
+export interface DiffReport {
+  newConversations: DiffEntry[];
+  updatedConversations: DiffEntry[];
+  skippedConversations: DiffEntry[];
+  totalNew: number;
+  totalUpdated: number;
+  totalSkipped: number;
+}
+
+const DIFF_DETAIL_LIMIT = 100;
 
 export interface ImportProgress {
   importLogId: number;
@@ -66,6 +85,8 @@ export interface ImportProgress {
   chunksCreated: number;
   chunksSkipped: number;
   errors: string[];
+  // V0.9: Diff report data
+  diff: DiffReport;
 }
 
 export interface ImportParams {
@@ -122,6 +143,14 @@ export async function importConversationsJson(params: ImportParams): Promise<num
     chunksCreated: 0,
     chunksSkipped: 0,
     errors: [],
+    diff: {
+      newConversations: [],
+      updatedConversations: [],
+      skippedConversations: [],
+      totalNew: 0,
+      totalUpdated: 0,
+      totalSkipped: 0,
+    },
   };
   activeImports.set(importLogId, progress);
 
@@ -163,7 +192,7 @@ async function runImport(
     // Finalize
     progress.phase = "finalizing";
     progress.status = "completed";
-    await finalizeImport(importLogId, progress, startTime);
+    await finalizeImport(importLogId, progress, startTime, projectId);
   } finally {
     // Always clean up temp file
     await fs.unlink(filePath).catch(() => {});
@@ -291,6 +320,10 @@ async function importSingleConversation(
     // S2: Skip conversations still being imported (concurrent import protection)
     if (existing.status === "importing") {
       progress.conversationsSkipped++;
+      progress.diff.totalSkipped++;
+      if (progress.diff.skippedConversations.length < DIFF_DETAIL_LIMIT) {
+        progress.diff.skippedConversations.push({ title: parsed.title, reason: "正在导入中" });
+      }
       progress.errors.push(`Conversation ${parsed.externalId}: skipped (still importing)`);
       return;
     }
@@ -302,18 +335,43 @@ async function importSingleConversation(
     if (existingUpdateTime === newUpdateTime && existingUpdateTime > 0) {
       // No changes — skip entirely
       progress.conversationsSkipped++;
+      progress.diff.totalSkipped++;
+      if (progress.diff.skippedConversations.length < DIFF_DETAIL_LIMIT) {
+        progress.diff.skippedConversations.push({ title: parsed.title, reason: "无变化" });
+      }
       return;
     }
 
     // Conversation updated — do incremental update
+    const beforeChunks = progress.chunksCreated;
+    const beforeMessages = progress.messagesTotal;
     await incrementalUpdateConversation(existing.id, projectId, parsed, progress);
     progress.conversationsUpdated++;
+    progress.diff.totalUpdated++;
+    if (progress.diff.updatedConversations.length < DIFF_DETAIL_LIMIT) {
+      const newMsgs = progress.messagesTotal - beforeMessages;
+      const newChunks = progress.chunksCreated - beforeChunks;
+      const parts: string[] = [];
+      if (newMsgs > 0) parts.push(`${newMsgs} 条新消息`);
+      if (newChunks > 0) parts.push(`${newChunks} 个新分段`);
+      progress.diff.updatedConversations.push({
+        title: parsed.title,
+        changes: parts.length > 0 ? parts.join(", ") : "元数据更新",
+      });
+    }
     return;
   }
 
   // New conversation — full import
   await fullImportConversation(parsed, projectId, cortexUserId, importLogId, progress);
   progress.conversationsImported++;
+  progress.diff.totalNew++;
+  if (progress.diff.newConversations.length < DIFF_DETAIL_LIMIT) {
+    progress.diff.newConversations.push({
+      title: parsed.title,
+      messageCount: parsed.messages.length,
+    });
+  }
 }
 
 /**
@@ -372,6 +430,7 @@ async function fullImportConversation(
       const chunkResult = await insertChunksWithStableId(
         chunks.map((c) => ({
           conversationId,
+          projectId,
           content: c.content,
           position: c.position,
           tokenCount: c.tokenCount,
@@ -501,6 +560,7 @@ async function incrementalUpdateConversation(
           const position = expectedPositionMap.get(stableId) ?? 0;
           const chunkResult = await insertChunksWithStableId([{
             conversationId,
+            projectId,
             content,
             position,
             tokenCount: content.length,
@@ -516,6 +576,7 @@ async function incrementalUpdateConversation(
             const position = expectedPositionMap.get(stableId) ?? ci;
             return {
               conversationId,
+              projectId,
               content,
               position,
               tokenCount: content.length,
@@ -568,8 +629,12 @@ async function finalizeImport(
   importLogId: number,
   progress: ImportProgress,
   startTime: number,
+  projectId?: number,
 ): Promise<void> {
   try {
+    // Serialize diff report (S5: capped at DIFF_DETAIL_LIMIT entries)
+    const diffReport = JSON.stringify(progress.diff);
+
     await updateImportLog(importLogId, {
       status: progress.status === "completed" ? "completed" : "failed",
       conversationsTotal: progress.conversationsTotal,
@@ -582,10 +647,18 @@ async function finalizeImport(
       errors: progress.errors.length > 0
         ? JSON.stringify(progress.errors).slice(0, 4 * 1024 * 1024) // cap at 4MB (MEDIUMTEXT = 16MB)
         : null,
+      diffReport,
       completedAt: new Date(),
       durationMs: Date.now() - startTime,
     });
   } catch (err) {
     console.error(`[import-service] Failed to finalize import ${importLogId}:`, err);
+  }
+
+  // V0.9: Auto-trigger topic extraction after successful import with new chunks (S1: dedup check inside submitJob)
+  if (projectId && progress.status === "completed" && progress.chunksCreated > 0) {
+    submitJob(projectId, "topic_extraction").catch((err) => {
+      console.warn(`[import-service] Failed to auto-submit topic extraction job:`, err);
+    });
   }
 }
