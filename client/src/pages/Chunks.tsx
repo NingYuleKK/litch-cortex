@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { FileText, Hash, Loader2, Layers, GitMerge, Tags, Zap, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight, RotateCcw, XCircle } from "lucide-react";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { keepPreviousData } from "@tanstack/react-query";
 
@@ -38,9 +38,9 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
 
   // V0.9: Job progress polling (2s interval, only when there's an active job)
   const jobProgress = trpc.job.progress.useQuery(
-    { jobId: activeJobId! },
+    { jobId: activeJobId!, projectId: projectId! },
     {
-      enabled: !!activeJobId,
+      enabled: !!activeJobId && !!projectId,
       refetchInterval: (query) => {
         const status = query.state.data?.status;
         if (status === "completed" || status === "failed" || status === "cancelled") return false;
@@ -49,17 +49,22 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
     }
   );
 
-  // When job completes/fails, clear activeJobId and refresh embedding status
+  // S-1: Move toast/refetch to useEffect to avoid re-triggering on every render
   const jobStatus = jobProgress.data?.status;
-  if (activeJobId && (jobStatus === "completed" || jobStatus === "failed" || jobStatus === "cancelled")) {
+  const prevJobStatusRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!activeJobId) return;
+    const prev = prevJobStatusRef.current;
+    prevJobStatusRef.current = jobStatus;
+    // Only fire when status transitions to a terminal state
+    if (prev === jobStatus) return;
     if (jobStatus === "completed") {
       toast.success(`向量生成完成，共处理 ${jobProgress.data?.processedItems ?? 0} 个分段。`);
       embeddingStatus.refetch();
     } else if (jobStatus === "failed") {
       toast.error(`向量生成失败: ${jobProgress.data?.lastError ?? "未知错误"}`, { duration: 6000 });
     }
-    // Don't clear immediately — keep the last status visible; user can dismiss or start new job
-  }
+  }, [activeJobId, jobStatus, jobProgress.data, embeddingStatus]);
 
   const submitJobMutation = trpc.embedding.submitGenerationJob.useMutation();
   const cancelJobMutation = trpc.job.cancel.useMutation();
@@ -81,7 +86,7 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
   const handleCancelJob = useCallback(async () => {
     if (!activeJobId) return;
     try {
-      await cancelJobMutation.mutateAsync({ jobId: activeJobId });
+      await cancelJobMutation.mutateAsync({ jobId: activeJobId, projectId: projectId! });
       toast.info("任务已取消");
       setActiveJobId(null);
       embeddingStatus.refetch();
@@ -93,7 +98,7 @@ export default function ChunksPage({ projectId }: { projectId?: number }) {
   const handleRetryJob = useCallback(async () => {
     if (!activeJobId) return;
     try {
-      const result = await retryJobMutation.mutateAsync({ jobId: activeJobId });
+      const result = await retryJobMutation.mutateAsync({ jobId: activeJobId, projectId: projectId! });
       if (result.newJobId) {
         setActiveJobId(result.newJobId);
         toast.info("已重新提交任务");

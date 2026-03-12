@@ -22,6 +22,7 @@ import {
   deleteChunkTopicsByChunkId,
   findOrCreateTopic,
   linkChunkToTopic,
+  withTransaction,
 } from "./db";
 import { generateEmbeddingsBatch } from "./embedding-service";
 import type { Job } from "../drizzle/schema";
@@ -182,6 +183,13 @@ async function processNextJob(): Promise<void> {
         throw new Error(`Unknown job type: ${job.type}`);
     }
 
+    // P1-3: Re-check status before marking completed — job may have been cancelled mid-run
+    const afterRun = await getJobById(job.id);
+    if (afterRun && afterRun.status === "cancelled") {
+      console.log(`[JobQueue] Job #${job.id} was cancelled during execution, skipping completed update`);
+      return;
+    }
+
     // Mark completed
     await updateJob(job.id, {
       status: "completed",
@@ -191,7 +199,10 @@ async function processNextJob(): Promise<void> {
   } catch (err: any) {
     console.error(`[JobQueue] Job #${job.id} failed:`, err.message);
 
-    const attempts = (job.attempts || 0) + 1; // +1 because claimNextPendingJob already incremented
+    // P1-1 fix: claimNextPendingJob already incremented attempts in DB,
+    // so re-read the current value instead of adding +1 again.
+    const current = await getJobById(job.id);
+    const attempts = current?.attempts ?? job.attempts ?? 1;
     if (attempts < (job.maxAttempts || 3)) {
       // Auto-retry: set back to pending
       await updateJob(job.id, {
@@ -298,15 +309,17 @@ async function runTopicExtractionJob(job: Job): Promise<void> {
       if (!check || check.status === "cancelled") break;
 
       try {
-        // M2: Delete existing chunk_topics first, then rewrite (per-chunk transaction)
-        await deleteChunkTopicsByChunkId(chunk.id);
-
+        // P1-2: LLM call OUTSIDE transaction to avoid long-running tx
         const extractedTopics = await extractTopicsFromChunk(chunk);
 
-        for (const t of extractedTopics) {
-          const topicId = await findOrCreateTopic(t.label);
-          await linkChunkToTopic(chunk.id, topicId, t.relevance);
-        }
+        // M2: Delete + rewrite inside a per-chunk transaction for atomicity
+        await withTransaction(async (tx) => {
+          await deleteChunkTopicsByChunkId(chunk.id, tx);
+          for (const t of extractedTopics) {
+            const topicId = await findOrCreateTopic(t.label, tx);
+            await linkChunkToTopic(chunk.id, topicId, t.relevance, tx);
+          }
+        });
       } catch (err: any) {
         // S7: single failure doesn't stop the job
         errors.push(`Chunk ${chunk.id}: ${err.message}`);

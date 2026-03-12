@@ -298,9 +298,17 @@ export async function searchChunksByKeyword(projectId: number, keyword: string, 
 
 // ─── Topic Helpers ──────────────────────────────────────────────────
 
-export async function findOrCreateTopic(label: string, description?: string): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+export async function findOrCreateTopic(label: string, descriptionOrTx?: string | DbOrTx, tx?: DbOrTx): Promise<number> {
+  // Overload: findOrCreateTopic(label, tx?) or findOrCreateTopic(label, description, tx?)
+  let description: string | undefined;
+  let resolvedTx: DbOrTx | undefined;
+  if (typeof descriptionOrTx === "string") {
+    description = descriptionOrTx;
+    resolvedTx = tx;
+  } else {
+    resolvedTx = descriptionOrTx;
+  }
+  const db = await resolveDb(resolvedTx);
 
   const existing = await db.select().from(topics).where(eq(topics.label, label)).limit(1);
   if (existing.length > 0) {
@@ -359,7 +367,20 @@ export async function getTopicsByProject(projectId: number) {
 export async function getTopicById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(topics).where(eq(topics.id, id)).limit(1);
+  // P1-4: Use derived weight (COUNT of linked chunks) instead of stale DB column
+  const result = await db
+    .select({
+      id: topics.id,
+      label: topics.label,
+      description: topics.description,
+      weight: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("weight"),
+      createdAt: topics.createdAt,
+    })
+    .from(topics)
+    .leftJoin(chunkTopics, eq(topics.id, chunkTopics.topicId))
+    .where(eq(topics.id, id))
+    .groupBy(topics.id)
+    .limit(1);
   return result[0];
 }
 
@@ -411,9 +432,8 @@ export async function getChunksByTopicAndProject(topicId: number, projectId: num
 
 // ─── ChunkTopic Helpers ─────────────────────────────────────────────
 
-export async function linkChunkToTopic(chunkId: number, topicId: number, relevanceScore: number = 1.0) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+export async function linkChunkToTopic(chunkId: number, topicId: number, relevanceScore: number = 1.0, tx?: DbOrTx) {
+  const db = await resolveDb(tx);
   // V0.9: idempotent with unique constraint — update relevanceScore on duplicate
   await db.insert(chunkTopics).values({ chunkId, topicId, relevanceScore })
     .onDuplicateKeyUpdate({ set: { relevanceScore } });
@@ -1523,25 +1543,23 @@ export async function getTopicCoverageByProject(projectId: number): Promise<{ to
   const db = await getDb();
   if (!db) return { totalChunks: 0, chunksWithTopics: 0, topicCount: 0 };
 
-  const totalResult = await db.select({ count: sql<number>`COUNT(*)`.as("count") })
-    .from(chunks).where(eq(chunks.projectId, projectId));
+  // S-2: Single aggregation query instead of 3 serial COUNTs
+  const result = await db.execute(sql`
+    SELECT
+      (SELECT COUNT(*) FROM ${chunks} WHERE ${chunks.projectId} = ${projectId}) AS totalChunks,
+      (SELECT COUNT(DISTINCT ${chunkTopics.chunkId}) FROM ${chunkTopics}
+        INNER JOIN ${chunks} ON ${chunkTopics.chunkId} = ${chunks.id}
+        WHERE ${chunks.projectId} = ${projectId}) AS chunksWithTopics,
+      (SELECT COUNT(DISTINCT ${chunkTopics.topicId}) FROM ${chunkTopics}
+        INNER JOIN ${chunks} ON ${chunkTopics.chunkId} = ${chunks.id}
+        WHERE ${chunks.projectId} = ${projectId}) AS topicCount
+  `);
 
-  const withTopicsResult = await db
-    .select({ count: sql<number>`COUNT(DISTINCT ${chunkTopics.chunkId})`.as("count") })
-    .from(chunkTopics)
-    .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
-    .where(eq(chunks.projectId, projectId));
-
-  const topicCountResult = await db
-    .select({ count: sql<number>`COUNT(DISTINCT ${chunkTopics.topicId})`.as("count") })
-    .from(chunkTopics)
-    .innerJoin(chunks, eq(chunkTopics.chunkId, chunks.id))
-    .where(eq(chunks.projectId, projectId));
-
+  const row = (result as any)[0]?.[0] ?? {};
   return {
-    totalChunks: totalResult[0]?.count || 0,
-    chunksWithTopics: withTopicsResult[0]?.count || 0,
-    topicCount: topicCountResult[0]?.count || 0,
+    totalChunks: Number(row.totalChunks) || 0,
+    chunksWithTopics: Number(row.chunksWithTopics) || 0,
+    topicCount: Number(row.topicCount) || 0,
   };
 }
 

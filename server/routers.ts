@@ -27,6 +27,7 @@ import {
   getMessageCountByProject, getDocumentCountByProject,
   getTopicCoverageByProject, getLatestImportLog, getLatestJobByType,
   getJobsByProject,
+  deleteChunkTopicsByChunkId, getJobById,
 } from "./db";
 import { getImportProgress } from "./import-service";
 import { storagePut } from "./storage";
@@ -382,6 +383,9 @@ export const appRouter = router({
         const parsed = JSON.parse(content);
         const extractedTopics: { label: string; topicId: number; relevance: number }[] = [];
 
+        // P1-5: Delete old chunk_topics before inserting new ones (M2 idempotency)
+        await deleteChunkTopicsByChunkId(input.chunkId);
+
         for (const t of parsed.topics) {
           const topicId = await findOrCreateTopic(t.label);
           await linkChunkToTopic(input.chunkId, topicId, t.relevance);
@@ -405,6 +409,7 @@ export const appRouter = router({
     extractDocument: protectedProcedure
       .input(z.object({ documentId: z.number() }))
       .mutation(async ({ input }) => {
+        const { extractTopicsFromChunk } = await import("./topic-extraction-service");
         const docChunks = await getChunksByDocument(input.documentId);
         if (docChunks.length === 0) throw new Error("No chunks found for document");
 
@@ -415,57 +420,13 @@ export const appRouter = router({
 
         for (const chunk of docChunks) {
           try {
-            const response = await callLLM({
-              taskType: "topic_extract",
-              messages: [
-                {
-        
-                  role: "system",
-                  content: `你是一个话题提取助手。请从给定的文本中提取 1-2 个核心话题标签。
-要求：
-- 每个话题标签用简短的中文短语表示（2-8个字）
-- 话题应该反映文本的核心主题
-- 返回 JSON 格式
+            const extractedTopics = await extractTopicsFromChunk(chunk);
 
-返回格式：
-{"topics": [{"label": "话题名称", "relevance": 0.9}]}`            },
-                { role: "user", content: chunk.content },
-              ],
-              response_format: {
-                type: "json_schema",
-                json_schema: {
-                  name: "topic_extraction",
-                  strict: true,
-                  schema: {
-                    type: "object",
-                    properties: {
-                      topics: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          properties: {
-                            label: { type: "string" },
-                            relevance: { type: "number" },
-                          },
-                          required: ["label", "relevance"],
-                          additionalProperties: false,
-                        },
-                      },
-                    },
-                    required: ["topics"],
-                    additionalProperties: false,
-                  },
-                },
-              },
-            });
-
-            const content = response.choices[0]?.message?.content;
-            if (content && typeof content === "string") {
-              const parsed = JSON.parse(content);
-              for (const t of parsed.topics) {
-                const topicId = await findOrCreateTopic(t.label);
-                await linkChunkToTopic(chunk.id, topicId, t.relevance);
-              }
+            // S-5/M2: Delete old associations, then rewrite
+            await deleteChunkTopicsByChunkId(chunk.id);
+            for (const t of extractedTopics) {
+              const topicId = await findOrCreateTopic(t.label);
+              await linkChunkToTopic(chunk.id, topicId, t.relevance);
             }
             processed++;
           } catch (err: any) {
@@ -1547,8 +1508,11 @@ export const appRouter = router({
   // ═══════════════════════════════════════════════════════════════════
   job: router({
     progress: protectedProcedure
-      .input(z.object({ jobId: z.number() }))
+      .input(z.object({ jobId: z.number(), projectId: z.number() }))
       .query(async ({ input }) => {
+        // P1-6: Verify job belongs to requested project
+        const job = await getJobById(input.jobId);
+        if (!job || job.projectId !== input.projectId) return null;
         return getJobProgress(input.jobId);
       }),
 
@@ -1572,15 +1536,25 @@ export const appRouter = router({
       }),
 
     cancel: protectedProcedure
-      .input(z.object({ jobId: z.number() }))
+      .input(z.object({ jobId: z.number(), projectId: z.number() }))
       .mutation(async ({ input }) => {
+        // P1-6: Verify job belongs to requested project
+        const job = await getJobById(input.jobId);
+        if (!job || job.projectId !== input.projectId) {
+          throw new Error("Job not found or access denied");
+        }
         const success = await cancelJob(input.jobId);
         return { success };
       }),
 
     retry: protectedProcedure
-      .input(z.object({ jobId: z.number() }))
+      .input(z.object({ jobId: z.number(), projectId: z.number() }))
       .mutation(async ({ input }) => {
+        // P1-6: Verify job belongs to requested project
+        const job = await getJobById(input.jobId);
+        if (!job || job.projectId !== input.projectId) {
+          throw new Error("Job not found or access denied");
+        }
         const newJobId = await retryJob(input.jobId);
         return { newJobId };
       }),

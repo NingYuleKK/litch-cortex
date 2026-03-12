@@ -68,21 +68,21 @@ export default function DataOverview({ projectId }: { projectId: number }) {
 
   const handleCancelJob = useCallback(async (jobId: number) => {
     try {
-      await cancelJobMutation.mutateAsync({ jobId });
+      await cancelJobMutation.mutateAsync({ jobId, projectId });
       toast.info("任务已取消");
     } catch (err: any) {
       toast.error(`取消失败: ${err.message}`);
     }
-  }, [cancelJobMutation]);
+  }, [cancelJobMutation, projectId]);
 
   const handleRetryJob = useCallback(async (jobId: number) => {
     try {
-      const result = await retryJobMutation.mutateAsync({ jobId });
+      const result = await retryJobMutation.mutateAsync({ jobId, projectId });
       if (result.newJobId) toast.info("已重新提交任务");
     } catch (err: any) {
       toast.error(`重试失败: ${err.message}`);
     }
-  }, [retryJobMutation]);
+  }, [retryJobMutation, projectId]);
 
   if (isLoading || !data) {
     return (
