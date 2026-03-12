@@ -1,5 +1,7 @@
 # Litch's Cortex 版本规划
 
+> **总原则**：Cortex 现阶段不追求成为通用 Memory OS，而是优先成为"对话资产治理 + 高质量召回/聚合/转写"的本地优先知识引擎；参考 Cognee 的 knowledge engine 视角、OpenViking 的上下文组织与检索可观测性、MemOS 的异步摄入与反馈纠错机制，逐步增强 Cortex 的可持续性、可解释性和可传承性。
+
 ## 已完成版本
 
 ### V0.1 — 基础框架
@@ -32,7 +34,7 @@
 - **导入 diff 报告**：每次导入后显示新增/修改/跳过了哪些对话
 - **导入失败可恢复/可重试**
 
-### Import / Index Observability
+### Import / Index Observability（一等功能）
 - 本次导入新增/修改/跳过了多少消息
 - 生成了多少 chunk、新增了多少 embeddings
 - 哪些 topic 受影响
@@ -63,16 +65,31 @@
 - 每个 case 定义：query、预期召回片段、不该召回的噪声、聚合后应提炼的结构、summary 评分
 - 每次换 prompt/embedding/rerank 都跑一遍
 
+### 检索质量解释层（Retrieval Trace）
+- 每次检索保留 trace log：query embedding → candidate pool size → filter rules → top-k scores → final ranking
+- Golden Eval case 增加"归因分析"维度：定位是 embedding/chunk/prompt/topic 哪个环节出了问题
+- 受 OpenViking 检索轨迹可视化启发
+
+### Hybrid Search
+- 从"纯语义 OR 纯关键词"升级为"关键词预过滤 + 语义重排"
+- 提升召回稳定性和精度
+- 受 MemOS hybrid search 和 OpenViking recursive retrieval 启发
+
 ### 人工修正闭环
 - 把 chunk 从 topic A 挪到 B
 - 合并两个 topic
 - 给 topic 设人工标题
 - 标记总结质量高/低
 - 标记结果可做 benchmark
+- **修正日志（Correction Logs）**：所有修正操作记录到 correction_logs 表（谁改了什么、从哪改到哪、改的理由标签），为未来自动回流预留数据基础。受 MemOS 反馈纠错机制启发
 
 ### Case by Case 验收
 - Litch 高频使用，边用边调
 - 验证召回准不准、聚合稳不稳、产出能不能用
+
+### 后台任务增强
+- Job checkpoint 机制：大文件导入中断后可从上次处理位置继续
+- 受 MemOS 异步摄入调度启发
 
 ---
 
@@ -80,7 +97,10 @@
 
 **目标：别人能跑起来并理解 Cortex**
 
-- 架构文档（ARCHITECTURE.md）
+- **架构文档（ARCHITECTURE.md）**
+  - 四层架构模型：Source Layer → Ingestion & Normalization → Index & Retrieval → Synthesis
+  - Skills/Prompts/Templates 作为一等上下文对象（可版本化、可标注、可评估）
+  - 受 Cognee knowledge engine 视角、OpenViking 上下文组织视角、MemOS memory lifecycle 视角启发
 - 样例数据
 - 部署指南
 - 通用化配置（清理私有痕迹）
@@ -99,3 +119,4 @@
 - 安全/隐私说明
 - 队列与失败恢复
 - 正式环境部署与监控
+- **基于修正日志的自动调优**：分析 correction_logs 中的修正模式，触发 prompt/ranking 调优建议
