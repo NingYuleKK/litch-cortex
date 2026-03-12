@@ -1,4 +1,4 @@
-# HANDOVER_CORTEX.md — Litch's Cortex V0.8 交接文档
+# HANDOVER_CORTEX.md — Litch's Cortex V0.9 交接文档
 
 ## 项目概述
 
@@ -512,6 +512,7 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 | **V0.6** | **2026-02-28** | **Embedding 向量搜索：chunkEmbeddings/embeddingConfig 表、Embedding Service、语义搜索（余弦相似度 top-K）、分段预览 embedding 状态、设置页 Embedding 配置** |
 | **V0.7** | **2026-03-05** | **Docker 化部署：Dockerfile（多阶段构建）、docker-compose.yml（MySQL 8.0）、本地磁盘存储、独立 LLM/Embedding 配置必填、seedDefaultAdmin 改用 crypto.randomBytes、initialPassword 停写明文；本地全链路测试通过** |
 | **V0.8** | **2026-03-09** | **ChatGPT 对话 JSON 导入：chatgpt-parser（主链回溯+7条过滤规则）、conversation-chunker（Q&A 对分段+stableId）、import-service（真流式解析+真增量更新+三级去重+事务包裹+归因日志）、conversations/conversationMessages/importLogs 3 张新表（含 projectId+externalId 复合唯一索引）、chunks 表扩展（conversationId+stableId）、conversation tRPC router 6 端点、对话导入前端页面（上传+进度+列表+历史）、Embedding V2 查询集成、69 个新测试全通过；Review 修复 M1-M5：真增量（只更新受影响消息+chunk）、真流式（multer diskStorage + 边解析边处理）、竞态防护（复合唯一索引+importing→done 状态机+事务）、Drizzle migration SQL** |
+| **V0.9** | **2026-03-12** | **后台任务系统 + Topic Extraction + Import Observability：DB-backed Job Queue（5s polling、retry、状态追踪）、Topic Extraction 自动接通（导入后自动提取话题）、Import Diff Report（新增/修改/跳过统计）、Data Overview Dashboard、chunk_topics 唯一约束+幂等、getTopicById 动态 weight、Job API project ownership 校验；二次三方 Review 通过（Codex + 子敬架构 + 子敬语义），15 个测试全通过** |
 
 ---
 
@@ -528,9 +529,10 @@ server/auth.logout.test.ts             → 认证测试（1 个测试）
 ### 近期规划
 - **V0.7: Docker化部署 ✅ 已完成（2026-03-05）**
 - **V0.8: ChatGPT 对话 JSON 导入 ✅ 已完成（2026-03-09）**
+- **V0.9: 后台任务系统 + Topic Extraction + Import Observability ✅ 已完成（2026-03-12）**
 
 ### 中期规划
-- V0.9: Claude/Gemini 对话格式支持（扩展 parser 架构）
+- V1.0: Claude/Gemini 对话格式支持（扩展 parser 架构）
 
 ### 远期规划
 - V1.0: 团队内部署交付
@@ -602,3 +604,11 @@ pnpm start
 33. **V0.8** Embedding V2 查询（`getEmbeddingCountByProjectV2`/`getChunksWithoutEmbeddingV2`）自动包含对话来源的 chunks
 34. **V0.8** 导入进度通过内存 Map 实时追踪，tRPC 轮询 2s；完成后 fallback 到 DB `import_logs` 表
 35. **V0.8** 测试文件 `server/v08.test.ts` 包含 53 个测试（parser + chunker + stableId + router 结构 + auth）
+36. **V0.9** 后台任务系统通过 `server/job-queue.ts` 实现，DB-backed 5s polling + 原子认领
+37. **V0.9** Topic Extraction 在导入完成后自动触发，通过 job queue 异步执行
+38. **V0.9** Import Diff Report 显示每次导入的新增/修改/跳过统计
+39. **V0.9** Data Overview Dashboard 在项目首页展示数据总览
+40. **V0.9** chunk_topics 表有 UNIQUE(chunkId, topicId) 约束，linkChunkToTopic 使用 onDuplicateKeyUpdate
+41. **V0.9** getTopicById 的 weight 通过 COUNT(DISTINCT chunkId) 动态计算，不再依赖 topics.weight 静态列
+42. **V0.9** Job API（progress/cancel/retry）要求传 projectId 并校验 job 归属
+43. **V0.9** 测试文件 `server/v09-jobqueue.test.ts` 和 `server/v09-topics.test.ts` 共 15 个测试
